@@ -1,0 +1,2927 @@
+// ========== API CONFIG ==========
+const API_BASE_URL = "http://127.0.0.1:8000";
+
+async function apiRequest(path, options = {}) {
+  const token = sessionStorage.getItem("afa_access_token");
+
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {})
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message =
+      typeof data.detail === "string"
+        ? data.detail
+        : "Request failed. Please try again.";
+
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+
+  return data;
+}
+
+// ========== AUTH VISIBILITY ==========
+function setAuthVisibility(isLoggedIn) {
+  const authScreen = document.getElementById("authScreen");
+  const appShell = document.getElementById("appShell");
+
+  if (!authScreen || !appShell) {
+    console.error(
+      "Missing #authScreen or #appShell in index.html."
+    );
+    return;
+  }
+
+  authScreen.style.display = isLoggedIn ? "none" : "flex";
+  appShell.style.display = isLoggedIn ? "block" : "none";
+}
+
+// ========== USER PROFILE ==========
+
+let currentUserEmail = "";
+
+function updateUserProfile(email){
+
+  currentUserEmail = email || currentUserEmail;
+
+  const userEmail=document.getElementById("userEmail");
+  const userName=document.getElementById("userName");
+  const avatar=document.getElementById("userAvatar");
+  const greeting=document.getElementById("greetingText");
+
+  if(!currentUserEmail) return;
+
+  const name=currentUserEmail.split("@")[0];
+
+  const displayName=name
+      .replace(/[._-]/g," ")
+      .replace(/\b\w/g,c=>c.toUpperCase());
+
+  const hour=new Date().getHours();
+
+  let greet="Hello";
+
+  if(hour<12) greet="Good Morning";
+  else if(hour<17) greet="Good Afternoon";
+  else greet="Good Evening";
+
+  userEmail.textContent=currentUserEmail;
+  userName.textContent=displayName;
+  avatar.textContent=displayName.charAt(0).toUpperCase();
+
+  if(greeting){
+      greeting.textContent=`${greet}, ${displayName}!`;
+  }
+}
+
+// ========== LOGIN / SIGNUP ==========
+let authMode = "login";
+
+function updateAuthMode() {
+  const registering = authMode === "register";
+
+  document.getElementById("authHeading").textContent =
+    registering ? "Create your account" : "Login to your account";
+
+  document.getElementById("authSubmit").textContent =
+    registering ? "Create account" : "Login";
+
+  document.getElementById("authSwitchText").textContent =
+    registering
+      ? "Already have an account?"
+      : "Don't have an account?";
+
+  document.getElementById("authSwitch").textContent =
+    registering ? "Login" : "Sign up";
+
+  document.getElementById("authPassword").autocomplete =
+    registering ? "new-password" : "current-password";
+
+  document.getElementById("authError").textContent = "";
+}
+
+function logout() {
+  sessionStorage.removeItem("afa_access_token");
+  sessionStorage.removeItem("afa_user_email");
+
+  localStorage.removeItem("afa_tx");
+  localStorage.removeItem("afa_budgets");
+  localStorage.removeItem("afa_goals");
+
+  transactions = [];
+  budgets = [];
+  goals = [];
+
+  setAuthVisibility(false);
+
+  const authForm = document.getElementById("authForm");
+  const authError = document.getElementById("authError");
+
+  if (authForm) authForm.reset();
+  if (authError) authError.textContent = "";
+
+  authMode = "login";
+  updateAuthMode();
+
+  toast("You have been logged out.");
+}
+
+document.getElementById("authSwitch").addEventListener("click", () => {
+  authMode = authMode === "login" ? "register" : "login";
+  updateAuthMode();
+});
+
+async function handleAuthSubmit(event) {
+  event.preventDefault();
+
+  const email = document
+    .getElementById("authEmail")
+    .value.trim()
+    .toLowerCase();
+
+  const password = document.getElementById("authPassword").value;
+  const submit = document.getElementById("authSubmit");
+  const error = document.getElementById("authError");
+
+  submit.disabled = true;
+  submit.textContent = "Please wait...";
+  error.textContent = "";
+
+  try {
+    if (authMode === "register") {
+      await apiRequest("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ email, password })
+      });
+    }
+
+    const result = await apiRequest("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password })
+    });
+
+    if (!result.access_token) {
+      throw new Error("Login response did not contain an access token.");
+    }
+
+    sessionStorage.setItem(
+      "afa_access_token",
+      result.access_token
+    );
+    sessionStorage.setItem("afa_user_email", email);
+    updateUserProfile(email); 
+    
+    setAuthVisibility(true);
+    document.getElementById("authPassword").value = "";
+
+    await loadTransactionsFromBackend();
+    await loadBudgetGoalsFromBackend();
+
+    showPage("dashboard");
+
+  } catch (err) {
+    console.error("Authentication error:", err);
+
+    error.textContent =
+      err.message || "Unable to sign in. Please try again.";
+
+  } finally {
+    submit.disabled = false;
+    submit.textContent =
+      authMode === "register" ? "Create account" : "Login";
+  }
+}
+
+document
+  .getElementById("authForm")
+  .addEventListener("submit", handleAuthSubmit);
+
+// ========== STORAGE ==========
+function load(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function save(key, data) {
+  localStorage.setItem(key, JSON.stringify(data));
+}
+
+let transactions = load("afa_tx", []);
+let budgets = load("afa_budgets", []);
+let goals = load("afa_goals", []);
+
+const CAT_COLORS = {
+  Food: "#f97316",
+  Transport: "#3b82f6",
+  Shopping: "#a855f7",
+  Bills: "#ef4444",
+  Entertainment: "#ec4899",
+  Health: "#10b981",
+  Education: "#6366f1",
+  Salary: "#10b981",
+  Freelance: "#14b8a6",
+  Other: "#64748b"
+};
+
+// ========== TRANSACTIONS FROM BACKEND ==========
+async function loadTransactionsFromBackend() {
+  if (!sessionStorage.getItem("afa_access_token")) return;
+
+  try {
+    const data = await apiRequest("/transactions");
+
+    transactions = data.map(t => ({
+      id: t.id,
+      title: t.title,
+      amount: Number(t.amount),
+      category: t.category,
+      type: t.transaction_type,
+      date: String(t.transaction_date).slice(0, 10)
+    }));
+
+    save("afa_tx", transactions);
+    renderExpenses();
+    updateDashboard();
+
+  } catch (err) {
+    console.error("Could not load transactions:", err);
+    toast(err.message || "Could not load transactions");
+  }
+}
+
+// ========== HELPERS ==========
+function rupee(n) {
+  return "₹" + Number(n).toLocaleString("en-IN");
+}
+
+function fmtDate(d) {
+  if (!d) return "—";
+
+  return new Date(d).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric"
+  });
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function toast(msg) {
+  const el = document.getElementById("toast");
+  if (!el) return;
+
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  el.classList.add("show");
+
+  setTimeout(() => {
+    el.classList.add("hidden");
+    el.classList.remove("show");
+  }, 2500);
+}
+
+function getIncome() {
+  return transactions
+    .filter(t => t.type === "income")
+    .reduce((s, t) => s + t.amount, 0);
+}
+
+function getExpense() {
+  return transactions
+    .filter(t => t.type === "expense")
+    .reduce((s, t) => s + t.amount, 0);
+}
+
+function getCategorySpend() {
+  const map = {};
+
+  transactions
+    .filter(t => t.type === "expense")
+    .forEach(t => {
+      map[t.category] = (map[t.category] || 0) + t.amount;
+    });
+
+  return map;
+}
+
+function spentInCategory(cat) {
+  return transactions
+    .filter(t => t.type === "expense" && t.category === cat)
+    .reduce((s, t) => s + t.amount, 0);
+}
+
+function escapeHtml(value) {
+  const d = document.createElement("div");
+  d.textContent = String(value ?? "");
+  return d.innerHTML;
+}
+
+// ========== NAVIGATION ==========
+function showPage(name) {
+  if (!sessionStorage.getItem("afa_access_token")) {
+    setAuthVisibility(false);
+    return;
+  }
+  if (name === "planner") {
+    loadSavingsPlanner();
+  }
+
+  if (name === "budget") {
+    loadBillsFromBackend();
+  }
+
+  document.querySelectorAll(".page").forEach(p => {
+    p.classList.remove("active");
+  });
+
+  document.querySelectorAll(".nav-btn").forEach(b => {
+    b.classList.remove("active");
+  });
+
+  const page = document.getElementById("page-" + name);
+
+  if (page) page.classList.add("active");
+
+  const btn = document.querySelector('[data-page="' + name + '"]');
+  if (btn) btn.classList.add("active");
+
+  const titles = {
+    dashboard: "Dashboard",
+    chat: "AI Advisor",
+    expenses: "Expenses",
+    budget: "Budget & Goals",
+    reports: "Reports",
+    twin: "Financial Digital Twin"
+  };
+
+  const pageTitle = document.getElementById("pageTitle");
+  if (pageTitle) pageTitle.textContent = titles[name] || "Dashboard";
+
+  closeSidebar();
+
+  if (name === "dashboard") updateDashboard();
+
+  if (name === "expenses") {
+    renderExpenses();
+    setDefaultDate();
+  }
+
+  if (name === "budget") renderBudget();
+  if (name === "reports") updateReports();
+  if (name === "chat") initChat();
+  if (name === "twin") loadDigitalTwin();
+}
+
+function openSidebar() {
+  document.getElementById("sidebar").classList.add("open");
+  document.getElementById("overlay").classList.remove("hidden");
+}
+
+function closeSidebar() {
+  const sidebar = document.getElementById("sidebar");
+  const overlay = document.getElementById("overlay");
+
+  if (sidebar) sidebar.classList.remove("open");
+  if (overlay) overlay.classList.add("hidden");
+}
+
+function setDefaultDate() {
+  const el = document.getElementById("expDate");
+  if (el && !el.value) el.value = today();
+}
+
+// ========== DASHBOARD ==========
+let spendChartObj = null;
+let pieChartObj = null;
+
+function updateDashboard() {
+  const income = getIncome();
+  const expense = getExpense();
+  const balance = income - expense;
+  const rate = income > 0
+    ? ((balance / income) * 100).toFixed(1)
+    : 0;
+
+  document.getElementById("card-balance").textContent = rupee(balance);
+  document.getElementById("card-income").textContent = rupee(income);
+  document.getElementById("card-expense").textContent = rupee(expense);
+  document.getElementById("card-savings").textContent = rate + "%";
+
+  const qbar = document.getElementById("quickAddBar");
+  if (qbar) qbar.style.display = transactions.length ? "none" : "flex";
+
+  document.getElementById("card-balance-sub").textContent =
+    transactions.length
+      ? (balance >= 0 ? "Positive balance" : "Negative balance")
+      : "Add income & expenses";
+
+  document.getElementById("card-income-sub").textContent =
+    income
+      ? transactions.filter(t => t.type === "income").length + " income entries"
+      : "No income yet";
+
+  document.getElementById("card-expense-sub").textContent =
+    expense
+      ? transactions.filter(t => t.type === "expense").length + " expense entries"
+      : "No expenses yet";
+
+  document.getElementById("card-savings-sub").textContent =
+    income
+      ? (rate >= 20
+          ? "Healthy savings"
+          : rate >= 0
+            ? "Can improve"
+            : "Spending more than income")
+      : "Add data to calculate";
+
+  const insight = document.getElementById("aiInsight");
+
+  if (!transactions.length) {
+    insight.textContent =
+      "Add some income and expenses, then come back — I will give personalised tips based on your real data.";
+  } else {
+    const catSpend = getCategorySpend();
+    const top = Object.keys(catSpend).sort(
+      (a, b) => catSpend[b] - catSpend[a]
+    )[0];
+
+    if (top) {
+      insight.innerHTML =
+        "Your top expense is <b class=\"text-white\">" +
+        escapeHtml(top) +
+        "</b> at <b class=\"text-white\">" +
+        rupee(catSpend[top]) +
+        "</b>. Savings rate is <b class=\"text-amber-400\">" +
+        rate +
+        "%</b>. " +
+        (rate < 20
+          ? "Try cutting " + escapeHtml(top) + " a bit to boost savings."
+          : "You are doing well — keep it up!");
+    } else {
+      insight.textContent =
+        "You have income but no expenses recorded yet. Add expenses to get better insights.";
+    }
+  }
+
+  const recent = [...transactions]
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .slice(0, 5);
+
+  const recentEl = document.getElementById("recentList");
+
+  if (!recent.length) {
+    recentEl.innerHTML = `
+      <div class="empty-state">
+        <div class="icon-wrap"><i class="fas fa-receipt"></i></div>
+        <p class="text-slate-500 text-sm font-medium mb-1">No transactions yet</p>
+        <p class="text-slate-400 text-xs mb-4">Salary aur expenses yahan dikhenge</p>
+        <button onclick="showPage('expenses')" class="btn-primary">
+          <i class="fas fa-plus mr-1.5"></i> Add Transaction
+        </button>
+      </div>`;
+  } else {
+    recentEl.innerHTML = recent.map(t => `
+      <div class="flex items-center gap-3 py-2">
+        <div class="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold text-white"
+             style="background:${CAT_COLORS[t.category] || "#64748b"}">
+          ${escapeHtml((t.category || "?")[0])}
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium truncate">${escapeHtml(t.title)}</p>
+          <p class="text-xs text-slate-400">${fmtDate(t.date)} • ${escapeHtml(t.category)}</p>
+        </div>
+        <p class="text-sm font-semibold ${t.type === "income" ? "text-emerald-600" : ""}">
+          ${t.type === "income" ? "+" : "-"}${rupee(t.amount)}
+        </p>
+      </div>
+    `).join("");
+  }
+
+  initDashboardCharts();
+}
+
+function initDashboardCharts() {
+  const catSpend = getCategorySpend();
+  const labels = Object.keys(catSpend);
+  const values = Object.values(catSpend);
+  const hasExpense = values.length > 0;
+  const hasAny = transactions.length > 0;
+
+  document.getElementById("spendEmpty").style.display =
+    hasAny ? "none" : "flex";
+
+  document.getElementById("pieEmpty").style.display =
+    hasExpense ? "none" : "flex";
+
+  const months = {};
+
+  transactions.forEach(t => {
+    const key = t.date ? t.date.slice(0, 7) : "unknown";
+
+    if (!months[key]) months[key] = { income: 0, expense: 0 };
+
+    if (t.type === "income") {
+      months[key].income += t.amount;
+    } else {
+      months[key].expense += t.amount;
+    }
+  });
+
+  const sortedKeys = Object.keys(months).sort();
+
+  const lineLabels = sortedKeys.map(k => {
+    const [y, m] = k.split("-");
+    return new Date(Number(y), Number(m) - 1)
+      .toLocaleDateString("en-IN", {
+        month: "short",
+        year: "2-digit"
+      });
+  });
+
+  const lineIncome = sortedKeys.map(k => months[k].income);
+  const lineExpense = sortedKeys.map(k => months[k].expense);
+
+  const ctx1 = document.getElementById("spendChart");
+
+  if (spendChartObj) {
+    spendChartObj.destroy();
+    spendChartObj = null;
+  }
+
+  if (hasAny && ctx1) {
+    spendChartObj = new Chart(ctx1, {
+      type: "line",
+      data: {
+        labels: lineLabels.length ? lineLabels : ["No data"],
+        datasets: [
+          {
+            label: "Expenses",
+            data: lineExpense.length ? lineExpense : [0],
+            borderColor: "#0ea5e9",
+            backgroundColor: "rgba(14,165,233,0.1)",
+            fill: true,
+            tension: 0.4
+          },
+          {
+            label: "Income",
+            data: lineIncome.length ? lineIncome : [0],
+            borderColor: "#10b981",
+            tension: 0.4
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "top" } },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {
+              callback: v => "₹" + (
+                v >= 1000 ? (v / 1000) + "k" : v
+              )
+            }
+          }
+        }
+      }
+    });
+  }
+
+  const ctx2 = document.getElementById("pieChart");
+
+  if (pieChartObj) {
+    pieChartObj.destroy();
+    pieChartObj = null;
+  }
+
+  if (hasExpense && ctx2) {
+    pieChartObj = new Chart(ctx2, {
+      type: "doughnut",
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          backgroundColor: labels.map(l => CAT_COLORS[l] || "#64748b"),
+          borderWidth: 0
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "right",
+            labels: { boxWidth: 12, font: { size: 11 } }
+          }
+        },
+        cutout: "65%"
+      }
+    });
+  }
+}
+
+// ========== EXPENSES ==========
+function renderExpenses() {
+  const filterCat = document.getElementById("filterCat")?.value || "all";
+  const filterType = document.getElementById("filterType")?.value || "all";
+  const search = (
+    document.getElementById("searchTx")?.value || ""
+  ).toLowerCase().trim();
+  const sort = document.getElementById("sortTx")?.value || "date-desc";
+
+  let list = [...transactions];
+
+  if (filterCat !== "all") {
+    list = list.filter(t => t.category === filterCat);
+  }
+
+  if (filterType !== "all") {
+    list = list.filter(t => t.type === filterType);
+  }
+
+  if (search) {
+    list = list.filter(t =>
+      (t.title || "").toLowerCase().includes(search) ||
+      (t.category || "").toLowerCase().includes(search)
+    );
+  }
+
+  if (sort === "date-desc") {
+    list.sort((a, b) => new Date(b.date) - new Date(a.date));
+  } else if (sort === "date-asc") {
+    list.sort((a, b) => new Date(a.date) - new Date(b.date));
+  } else if (sort === "amt-desc") {
+    list.sort((a, b) => b.amount - a.amount);
+  } else if (sort === "amt-asc") {
+    list.sort((a, b) => a.amount - b.amount);
+  }
+
+  const inc = getIncome();
+  const exp = getExpense();
+
+  const sumI = document.getElementById("sumIncome");
+  const sumE = document.getElementById("sumExpense");
+  const sumN = document.getElementById("sumNet");
+
+  if (sumI) sumI.textContent = rupee(inc);
+  if (sumE) sumE.textContent = rupee(exp);
+  if (sumN) sumN.textContent = rupee(inc - exp);
+
+  document.getElementById("txCount").textContent =
+    "(" + transactions.length + ")";
+
+  const tbody = document.getElementById("expTable");
+
+  if (!list.length) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="6">
+          <div class="empty-state">
+            <div class="icon-wrap"><i class="fas fa-wallet"></i></div>
+            <p class="text-slate-500 text-sm font-medium mb-1">No transactions</p>
+            <p class="text-slate-400 text-xs">Upar wale form se pehli entry add karo</p>
+          </div>
+        </td>
+      </tr>`;
+    return;
+  }
+
+  tbody.innerHTML = list.map(t => `
+    <tr class="hover:bg-slate-50 dark-row">
+      <td class="px-5 py-3 font-medium">${escapeHtml(t.title)}</td>
+      <td class="px-5 py-3">
+        <span class="inline-block px-2 py-0.5 rounded-full text-xs text-white"
+              style="background:${CAT_COLORS[t.category] || "#64748b"}">
+          ${escapeHtml(t.category)}
+        </span>
+      </td>
+      <td class="px-5 py-3 text-slate-500">${fmtDate(t.date)}</td>
+      <td class="px-5 py-3">
+        <span class="text-xs font-medium ${
+          t.type === "income" ? "text-emerald-600" : "text-rose-600"
+        }">
+          ${t.type === "income" ? "Income" : "Expense"}
+        </span>
+      </td>
+      <td class="px-5 py-3 text-right font-semibold ${
+        t.type === "income" ? "text-emerald-600" : ""
+      }">
+        ${t.type === "income" ? "+" : "-"}${rupee(t.amount)}
+      </td>
+      <td class="px-5 py-3 text-center whitespace-nowrap">
+        <button onclick="editExpense(${Number(t.id)})"
+                class="text-slate-400 hover:text-sky-500 p-1"
+                title="Edit">
+          <i class="fas fa-pen"></i>
+        </button>
+        <button onclick="deleteExpense(${Number(t.id)})"
+                class="text-slate-400 hover:text-red-500 p-1"
+                title="Delete">
+          <i class="fas fa-trash-alt"></i>
+        </button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+async function addExpense(e) {
+  e.preventDefault();
+
+  const title = document.getElementById("expTitle").value.trim();
+  const amount = Number(document.getElementById("expAmount").value);
+  const category = document.getElementById("expCategory").value;
+  const type = document.getElementById("expType").value;
+  const date = document.getElementById("expDate").value || today();
+  const editId = document.getElementById("editId")?.value;
+
+  if (!title || !Number.isFinite(amount) || amount <= 0) {
+    toast("Please fill title and enter a valid amount");
+    return;
+  }
+
+  const payload = {
+    title,
+    amount,
+    category,
+    transaction_type: type,
+    transaction_date: date
+  };
+
+  try {
+    let saved;
+
+    if (editId) {
+      saved = await apiRequest(`/transactions/${editId}`, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+
+      const updated = {
+        id: saved.id,
+        title: saved.title,
+        amount: Number(saved.amount),
+        category: saved.category,
+        type: saved.transaction_type,
+        date: String(saved.transaction_date).slice(0, 10)
+      };
+
+      const index = transactions.findIndex(
+        t => String(t.id) === String(editId)
+      );
+
+      if (index >= 0) {
+        transactions[index] = updated;
+      } else {
+        transactions.unshift(updated);
+      }
+
+      toast("Transaction updated successfully");
+
+    } else {
+      saved = await apiRequest("/transactions", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      transactions.unshift({
+        id: saved.id,
+        title: saved.title,
+        amount: Number(saved.amount),
+        category: saved.category,
+        type: saved.transaction_type,
+        date: String(saved.transaction_date).slice(0, 10)
+      });
+
+      toast("Transaction saved to your account");
+    }
+
+    e.target.reset();
+
+    const editField = document.getElementById("editId");
+    if (editField) editField.value = "";
+
+    const btnText = document.getElementById("saveBtnText");
+    if (btnText) btnText.textContent = "Save";
+
+    setDefaultDate();
+    renderExpenses();
+    updateDashboard();
+    save("afa_tx", transactions);
+
+  } catch (err) {
+    toast(err.message || "Could not save transaction");
+  }
+}
+
+function editExpense(id) {
+  const t = transactions.find(x => String(x.id) === String(id));
+  if (!t) return;
+
+  document.getElementById("editId").value = t.id;
+  document.getElementById("expTitle").value = t.title;
+  document.getElementById("expAmount").value = t.amount;
+  document.getElementById("expCategory").value = t.category;
+  document.getElementById("expType").value = t.type;
+  document.getElementById("expDate").value = t.date;
+
+  const btnText = document.getElementById("saveBtnText");
+  if (btnText) btnText.textContent = "Update";
+
+  document.getElementById("expTitle").scrollIntoView({
+    behavior: "smooth",
+    block: "center"
+  });
+
+  document.getElementById("expTitle").focus();
+  toast("Editing — change & click Update");
+}
+
+async function deleteExpense(id) {
+  if (!confirm("Delete this transaction?")) return;
+
+  try {
+    await apiRequest(`/transactions/${id}`, {
+      method: "DELETE"
+    });
+
+    transactions = transactions.filter(
+      t => String(t.id) !== String(id)
+    );
+
+    save("afa_tx", transactions);
+    renderExpenses();
+    updateDashboard();
+    toast("Transaction deleted");
+
+  } catch (err) {
+    toast(err.message || "Could not delete transaction");
+  }
+}
+
+function exportCSV() {
+  if (!transactions.length) {
+    toast("No data to export");
+    return;
+  }
+
+  const rows = [["Title", "Amount", "Category", "Type", "Date"]];
+
+  transactions.forEach(t => {
+    rows.push([t.title, t.amount, t.category, t.type, t.date]);
+  });
+
+  const csv = rows
+    .map(row =>
+      row.map(c =>
+        '"' + String(c).replace(/"/g, '""') + '"'
+      ).join(",")
+    )
+    .join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+
+  a.href = url;
+  a.download = "finance-transactions.csv";
+  a.click();
+
+  URL.revokeObjectURL(url);
+  toast("CSV downloaded");
+}
+
+function toggleDark() {
+  document.body.classList.toggle("dark-mode");
+
+  const on = document.body.classList.contains("dark-mode");
+
+  localStorage.setItem("afa_dark", on ? "1" : "0");
+
+  const btn = document.getElementById("darkBtn");
+
+  if (btn) {
+    btn.innerHTML = on
+      ? '<i class="fas fa-sun"></i>'
+      : '<i class="fas fa-moon"></i>';
+  }
+}
+
+// ========== BUDGETS AND SAVINGS GOALS ==========
+async function loadBudgetGoalsFromBackend() {
+  if (!sessionStorage.getItem("afa_access_token")) return;
+
+  try {
+    const now = new Date();
+
+    const monthStart = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      "01"
+    ].join("-");
+
+    const [budgetData, goalData] = await Promise.all([
+      apiRequest(`/budgets?month_start=${monthStart}`),
+      apiRequest("/savings-goals")
+    ]);
+
+    budgets = budgetData.map(b => ({
+      id: b.id,
+      category: b.category,
+      limit: Number(b.budget_amount),
+      month_start: String(b.month_start).slice(0, 10)
+    }));
+
+    goals = goalData.map(g => ({
+      id: g.id,
+      name: g.goal_name,
+      target: Number(g.target_amount),
+      current: Number(g.current_amount),
+      target_date: g.target_date || null
+    }));
+
+    save("afa_budgets", budgets);
+    save("afa_goals", goals);
+
+    renderBudget();
+
+  } catch (err) {
+    console.error("Could not load budgets and goals:", err);
+    toast(err.message || "Could not load budgets and goals");
+  }
+}
+
+function renderBudget() {
+  const listEl = document.getElementById("budgetList");
+
+  if (!budgets.length) {
+    listEl.innerHTML = `
+      <div class="empty-state py-6">
+        <div class="icon-wrap"><i class="fas fa-bullseye"></i></div>
+        <p class="text-slate-500 text-sm font-medium">No budgets yet</p>
+        <p class="text-slate-400 text-xs mt-1">Upar se category limit set karo</p>
+      </div>`;
+  } else {
+    listEl.innerHTML = budgets.map((b, i) => {
+      const spent = spentInCategory(b.category);
+      const pct = b.limit > 0
+        ? Math.min(100, Math.round((spent / b.limit) * 100))
+        : 0;
+      const over = pct >= 90;
+
+      return `
+        <div>
+          <div class="flex justify-between mb-1 items-center">
+            <span class="text-sm font-medium">${escapeHtml(b.category)}</span>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-slate-500">
+                ${rupee(spent)} / ${rupee(b.limit)}
+              </span>
+              <button onclick="deleteBudget(${i})"
+                      class="text-slate-400 hover:text-red-500 text-xs">
+                <i class="fas fa-trash-alt"></i>
+              </button>
+            </div>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill"
+                 style="width:${pct}%;background:${
+                   over ? "#ef4444" : (CAT_COLORS[b.category] || "#0ea5e9")
+                 }">
+            </div>
+          </div>
+          <p class="text-xs mt-1 ${
+            over ? "text-red-500" : "text-slate-400"
+          }">
+            ${pct}% used ${over ? "— Near / over limit" : ""}
+          </p>
+        </div>`;
+    }).join("");
+  }
+
+  const goalsEl = document.getElementById("goalsList");
+
+  if (!goals.length) {
+    goalsEl.innerHTML = `
+      <div class="empty-state py-4">
+        <div class="icon-wrap"><i class="fas fa-flag"></i></div>
+        <p class="text-slate-500 text-sm font-medium">No goals yet</p>
+      </div>`;
+  } else {
+    goalsEl.innerHTML = goals.map((g, i) => {
+      const pct = g.target > 0
+        ? Math.min(100, Math.round((g.current / g.target) * 100))
+        : 0;
+
+      return `
+        <div class="p-4 rounded-xl bg-slate-50 border">
+          <div class="flex justify-between mb-2 items-start">
+            <div>
+              <p class="font-medium text-sm">${escapeHtml(g.name)}</p>
+              <p class="text-xs text-slate-400">
+                ${rupee(g.current)} of ${rupee(g.target)}
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-semibold text-sky-600">${pct}%</span>
+              <button onclick="updateGoalProgress(${i})"
+                      class="text-slate-400 hover:text-sky-500 text-xs"
+                      title="Update saved">
+                <i class="fas fa-plus-circle"></i>
+              </button>
+              <button onclick="deleteGoal(${i})"
+                      class="text-slate-400 hover:text-red-500 text-xs">
+                <i class="fas fa-trash-alt"></i>
+              </button>
+            </div>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill"
+                 style="width:${pct}%;background:#0ea5e9">
+            </div>
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  const tip = document.getElementById("budgetAITip");
+  const income = getIncome();
+  const expense = getExpense();
+
+  if (!transactions.length && !budgets.length) {
+    tip.textContent =
+      "Set budgets and goals, add transactions — then I will give recommendations based on your numbers.";
+  } else if (budgets.length) {
+    const over = budgets.filter(
+      b => spentInCategory(b.category) >= b.limit * 0.9
+    );
+
+    if (over.length) {
+      tip.textContent =
+        "Watch out: " +
+        over.map(b => b.category).join(", ") +
+        " " +
+        (over.length > 1 ? "are" : "is") +
+        " near or over budget. Review those categories.";
+    } else {
+      tip.textContent =
+        "Your budgets look under control. Income: " +
+        rupee(income) +
+        ", Expenses: " +
+        rupee(expense) +
+        ". Keep tracking regularly.";
+    }
+  } else {
+    tip.textContent =
+      "You have transactions but no budgets. Set category limits so I can warn you when you overspend.";
+  }
+}
+
+async function addBudget(e) {
+  e.preventDefault();
+
+  const category = document.getElementById("budCategory").value;
+  const limit = Number(document.getElementById("budLimit").value);
+
+  if (!category || !Number.isFinite(limit) || limit <= 0) {
+    toast("Enter a valid budget amount");
+    return;
+  }
+
+  const now = new Date();
+
+  const monthStart = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    "01"
+  ].join("-");
+
+  const existing = budgets.find(b =>
+    b.category === category &&
+    b.month_start === monthStart
+  );
+
+  const payload = {
+    category,
+    budget_amount: limit,
+    month_start: monthStart
+  };
+
+  try {
+    if (existing) {
+      await apiRequest(`/budgets/${existing.id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+
+      toast("Budget updated for " + category);
+
+    } else {
+      await apiRequest("/budgets", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      toast("Budget saved to your account");
+    }
+
+    e.target.reset();
+    await loadBudgetGoalsFromBackend();
+
+  } catch (err) {
+    toast(err.message || "Could not save budget");
+  }
+}
+
+async function deleteBudget(i) {
+  const budget = budgets[i];
+  if (!budget) return;
+
+  if (!confirm("Remove this budget?")) return;
+
+  try {
+    await apiRequest(`/budgets/${budget.id}`, {
+      method: "DELETE"
+    });
+
+    await loadBudgetGoalsFromBackend();
+    toast("Budget removed");
+
+  } catch (err) {
+    toast(err.message || "Could not remove budget");
+  }
+}
+
+async function addGoal(e) {
+  e.preventDefault();
+
+  const name = document.getElementById("goalName").value.trim();
+  const target = Number(document.getElementById("goalTarget").value);
+  const current = Number(
+    document.getElementById("goalCurrent").value
+  ) || 0;
+
+  if (
+    !name ||
+    !Number.isFinite(target) ||
+    target <= 0 ||
+    !Number.isFinite(current) ||
+    current < 0
+  ) {
+    toast("Enter a valid goal name and amount");
+    return;
+  }
+
+  try {
+    await apiRequest("/savings-goals", {
+      method: "POST",
+      body: JSON.stringify({
+        goal_name: name,
+        target_amount: target,
+        current_amount: current,
+        target_date: null
+      })
+    });
+
+    e.target.reset();
+    document.getElementById("goalCurrent").value = 0;
+
+    await loadBudgetGoalsFromBackend();
+    toast("Savings goal saved to your account");
+
+  } catch (err) {
+    toast(err.message || "Could not save goal");
+  }
+}
+
+async function deleteGoal(i) {
+  const goal = goals[i];
+  if (!goal) return;
+
+  if (!confirm("Remove this goal?")) return;
+
+  try {
+    await apiRequest(`/savings-goals/${goal.id}`, {
+      method: "DELETE"
+    });
+
+    await loadBudgetGoalsFromBackend();
+    toast("Goal removed");
+
+  } catch (err) {
+    toast(err.message || "Could not remove goal");
+  }
+}
+
+async function updateGoalProgress(i) {
+  const goal = goals[i];
+  if (!goal) return;
+
+  const value = prompt(
+    'Current saved amount for "' + goal.name + '" (₹):',
+    goal.current
+  );
+
+  if (value === null) return;
+
+  const amount = Number(value);
+
+  if (!Number.isFinite(amount) || amount < 0) {
+    toast("Enter a valid amount");
+    return;
+  }
+
+  try {
+    await apiRequest(
+      `/savings-goals/${goal.id}/progress?current_amount=${encodeURIComponent(amount)}`,
+      { method: "PATCH" }
+    );
+
+    await loadBudgetGoalsFromBackend();
+    toast("Goal progress saved");
+
+  } catch (err) {
+    toast(err.message || "Could not update goal");
+  }
+}
+
+// ========== REPORTS ==========
+let barChartObj = null;
+let reportPieObj = null;
+
+function updateReports() {
+  const income = getIncome();
+  const expense = getExpense();
+  const catSpend = getCategorySpend();
+
+  const top = Object.keys(catSpend).sort(
+    (a, b) => catSpend[b] - catSpend[a]
+  )[0];
+
+  document.getElementById("rep-count").textContent = transactions.length;
+  document.getElementById("rep-top").textContent = top || "—";
+  document.getElementById("rep-balance").textContent =
+    rupee(income - expense);
+
+  const hasAny = transactions.length > 0;
+  const hasExpense = Object.keys(catSpend).length > 0;
+
+  document.getElementById("barEmpty").style.display =
+    hasAny ? "none" : "flex";
+
+  document.getElementById("reportPieEmpty").style.display =
+    hasExpense ? "none" : "flex";
+
+  const months = {};
+
+  transactions.forEach(t => {
+    const key = t.date ? t.date.slice(0, 7) : "unknown";
+
+    if (!months[key]) {
+      months[key] = { income: 0, expense: 0 };
+    }
+
+    if (t.type === "income") {
+      months[key].income += t.amount;
+    } else {
+      months[key].expense += t.amount;
+    }
+  });
+
+  const keys = Object.keys(months).sort();
+
+  const labels = keys.map(k => {
+    const [y, m] = k.split("-");
+    return new Date(Number(y), Number(m) - 1)
+      .toLocaleDateString("en-IN", { month: "short" });
+  });
+
+  const ctx1 = document.getElementById("barChart");
+
+  if (barChartObj) {
+    barChartObj.destroy();
+    barChartObj = null;
+  }
+
+  if (hasAny && ctx1) {
+    barChartObj = new Chart(ctx1, {
+      type: "bar",
+      data: {
+        labels: labels.length ? labels : ["—"],
+        datasets: [
+          {
+            label: "Income",
+            data: keys.map(k => months[k].income),
+            backgroundColor: "#10b981",
+            borderRadius: 6
+          },
+          {
+            label: "Expenses",
+            data: keys.map(k => months[k].expense),
+            backgroundColor: "#f43f5e",
+            borderRadius: 6
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: {
+              callback: v => "₹" + (
+                v >= 1000 ? (v / 1000) + "k" : v
+              )
+            }
+          }
+        }
+      }
+    });
+  }
+
+  const ctx2 = document.getElementById("reportPie");
+
+  if (reportPieObj) {
+    reportPieObj.destroy();
+    reportPieObj = null;
+  }
+
+  if (hasExpense && ctx2) {
+    const labels2 = Object.keys(catSpend);
+
+    reportPieObj = new Chart(ctx2, {
+      type: "doughnut",
+      data: {
+        labels: labels2,
+        datasets: [{
+          data: Object.values(catSpend),
+          backgroundColor: labels2.map(l => CAT_COLORS[l] || "#64748b"),
+          borderWidth: 0
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "right",
+            labels: { boxWidth: 12, font: { size: 11 } }
+          }
+        },
+        cutout: "60%"
+      }
+    });
+  }
+}
+
+// ========== AI CHAT ==========
+function buildAIReply(userText) {
+  const t = userText.toLowerCase();
+
+  const income = getIncome();
+  const expense = getExpense();
+  const balance = income - expense;
+
+  const rate = income > 0
+    ? ((balance / income) * 100).toFixed(1)
+    : 0;
+
+  const catSpend = getCategorySpend();
+
+  const topCat = Object.keys(catSpend).sort(
+    (a, b) => catSpend[b] - catSpend[a]
+  )[0];
+
+  const topAmt = topCat ? catSpend[topCat] : 0;
+
+  if (!transactions.length) {
+    return "You have not added any transactions yet.\n\n" +
+      "Go to Expenses → add your salary (Income) and some expenses. " +
+      "Then ask me again — I will analyse YOUR numbers.";
+  }
+
+  if (
+    t.includes("save") ||
+    t.includes("saving") ||
+    t.includes("bachat")
+  ) {
+    let tips = "Based on your data:\n\n";
+
+    tips += "• Income: " + rupee(income) + "\n";
+    tips += "• Expenses: " + rupee(expense) + "\n";
+    tips += "• Balance: " + rupee(balance) + "\n";
+    tips += "• Savings rate: " + rate + "%\n\n";
+
+    if (topCat) {
+      tips += "1. Your biggest spend is " + topCat +
+        " (" + rupee(topAmt) + "). Try cutting 10–15% there.\n";
+    }
+
+    tips += "2. Aim for at least 20% savings rate" +
+      (rate >= 20
+        ? " — you are already there!"
+        : " — currently " + rate + "%.") + "\n";
+
+    tips += "3. Set category budgets on the Budget page so you get alerts before overspending.";
+
+    return tips;
+  }
+
+  if (
+    t.includes("analyze") ||
+    t.includes("spending") ||
+    t.includes("expense") ||
+    t.includes("analysis")
+  ) {
+    let msg = "Your spending analysis:\n\n";
+
+    msg += "• Total Income: " + rupee(income) + "\n";
+    msg += "• Total Expenses: " + rupee(expense) + "\n";
+    msg += "• Net Balance: " + rupee(balance) + "\n";
+    msg += "• Savings Rate: " + rate + "%\n";
+    msg += "• Transactions: " + transactions.length + "\n\n";
+
+    if (topCat) {
+      msg += "Top category: " + topCat + " — " + rupee(topAmt);
+
+      if (expense > 0) {
+        msg += " (" + Math.round((topAmt / expense) * 100) +
+          "% of expenses)";
+      }
+
+      msg += "\n\n";
+    }
+
+    const sorted = Object.entries(catSpend).sort(
+      (a, b) => b[1] - a[1]
+    );
+
+    if (sorted.length) {
+      msg += "Breakdown:\n";
+
+      sorted.forEach(([c, a]) => {
+        msg += "  • " + c + ": " + rupee(a) + "\n";
+      });
+    }
+
+    return msg;
+  }
+
+  if (t.includes("budget")) {
+    if (income <= 0) {
+      return "Add your income first (Expenses → Type: Income), " +
+        "then I can suggest a 50/30/20 budget.";
+    }
+
+    const needs = Math.round(income * 0.5);
+    const wants = Math.round(income * 0.3);
+    const sav = Math.round(income * 0.2);
+
+    return "Suggested 50/30/20 budget for your income of " +
+      rupee(income) + ":\n\n" +
+      "• Needs (Food, Bills, Transport): " + rupee(needs) + " (50%)\n" +
+      "• Wants (Shopping, Entertainment): " + rupee(wants) + " (30%)\n" +
+      "• Savings & Goals: " + rupee(sav) + " (20%)\n\n" +
+      "Your current expenses: " + rupee(expense) + ". " +
+      (expense <= needs + wants
+        ? "You are within the suggested limits."
+        : "You are above suggested needs+wants — review discretionary spends.");
+  }
+
+  if (t.includes("goal") || t.includes("target")) {
+    if (!goals.length) {
+      return "You have no savings goals yet. Go to Budget & Goals " +
+        "and add one (e.g. Emergency Fund, Vacation).";
+    }
+
+    let msg = "Your goals:\n\n";
+
+    goals.forEach(g => {
+      const pct = g.target > 0
+        ? Math.min(100, Math.round((g.current / g.target) * 100))
+        : 0;
+
+      msg += "• " + g.name + ": " + rupee(g.current) +
+        " / " + rupee(g.target) + " (" + pct + "%)\n";
+    });
+
+    msg += "\nKeep adding monthly savings toward these targets.";
+    return msg;
+  }
+
+  if (
+    t.includes("hello") ||
+    t.includes("hi") ||
+    t.includes("hey")
+  ) {
+    return "Hi! I am your AI Finance Advisor.\n\n" +
+      "I use the transactions YOU added.\n\n" +
+      'Try: "Analyze my spending" | "How can I save more?" | "Suggest a budget"';
+  }
+
+  return "I can help with:\n\n" +
+    '• "Analyze my spending" — breakdown of your data\n' +
+    '• "How can I save more?" — tips from your numbers\n' +
+    '• "Suggest a budget" — 50/30/20 plan\n' +
+    '• "Show my goals" — goal progress\n\n' +
+    "Your current balance: " + rupee(balance) +
+    " | Savings rate: " + rate + "%";
+}
+
+function initChat() {
+  const box = document.getElementById("chatBox");
+
+  if (!box || box.dataset.ready) return;
+
+  box.dataset.ready = "1";
+
+  box.innerHTML = `
+    <div class="flex gap-3">
+      <div class="w-8 h-8 rounded-lg bg-sky-500 flex items-center justify-center text-white text-xs flex-shrink-0">
+        <i class="fas fa-robot"></i>
+      </div>
+      <div class="bg-white rounded-2xl rounded-tl-md px-4 py-3 shadow-sm border max-w-[85%] text-sm">
+        Hi! I analyse only the data you add.<br><br>
+        First add Income & Expenses, then ask me anything.
+        <div class="flex flex-wrap gap-2 mt-3">
+          <button onclick="quickChat('Analyze my spending')"
+                  class="text-xs bg-sky-50 text-sky-700 px-3 py-1.5 rounded-full hover:bg-sky-100">
+            Analyze my spending
+          </button>
+          <button onclick="quickChat('How can I save more?')"
+                  class="text-xs bg-sky-50 text-sky-700 px-3 py-1.5 rounded-full hover:bg-sky-100">
+            How can I save more?
+          </button>
+          <button onclick="quickChat('Suggest a budget')"
+                  class="text-xs bg-sky-50 text-sky-700 px-3 py-1.5 rounded-full hover:bg-sky-100">
+            Suggest a budget
+          </button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function quickChat(text) {
+  document.getElementById("chatInput").value = text;
+  sendChat({ preventDefault: () => {} });
+}
+
+async function sendChat(e) {
+  e.preventDefault();
+
+  const input = document.getElementById("chatInput");
+  const text = input.value.trim();
+
+  if (!text) return;
+
+  input.value = "";
+
+  const box = document.getElementById("chatBox");
+
+  const userMessage = document.createElement("div");
+  userMessage.className = "flex gap-3 justify-end";
+
+  const userBubble = document.createElement("div");
+  userBubble.className =
+    "bg-sky-500 text-white rounded-2xl rounded-tr-md px-4 py-3 max-w-[80%] text-sm";
+  userBubble.textContent = text;
+
+  const userAvatar = document.createElement("div");
+  userAvatar.className =
+    "w-8 h-8 rounded-lg bg-slate-200 flex items-center justify-center text-xs font-bold flex-shrink-0";
+  userAvatar.textContent = "U";
+
+  userMessage.append(userBubble, userAvatar);
+  box.appendChild(userMessage);
+
+  const replyBubble = document.createElement("div");
+  replyBubble.className =
+    "bg-white rounded-2xl rounded-tl-md px-4 py-3 shadow-sm border max-w-[85%] text-sm whitespace-pre-line";
+  replyBubble.textContent = "Analysing your financial data...";
+
+  const replyMessage = document.createElement("div");
+  replyMessage.className = "flex gap-3";
+
+  const botAvatar = document.createElement("div");
+  botAvatar.className =
+    "w-8 h-8 rounded-lg bg-sky-500 flex items-center justify-center text-white text-xs flex-shrink-0";
+  botAvatar.innerHTML = '<i class="fas fa-robot"></i>';
+
+  replyMessage.append(botAvatar, replyBubble);
+  box.appendChild(replyMessage);
+  box.scrollTop = box.scrollHeight;
+
+  try {
+    let reply = buildAIReply(text);
+    const query = text.toLowerCase();
+
+    const needsRecommendations =
+      /save|saving|bachat|budget|spend|spending|expense|analyse|analyze|analysis|recommend|overspend|financial|advice|suggestion/.test(query);
+
+    if (
+      needsRecommendations &&
+      sessionStorage.getItem("afa_access_token")
+    ) {
+      try {
+        const data = await apiRequest(
+          "/financial-analysis/recommendations"
+        );
+
+        const recommendations = Array.isArray(data.recommendations)
+          ? data.recommendations
+          : [];
+
+        const formatted = recommendations
+          .map(item => {
+            if (typeof item === "string") return item;
+
+            if (item && typeof item === "object") {
+              return (
+                item.recommendation ||
+                item.message ||
+                item.description ||
+                item.title ||
+                ""
+              );
+            }
+
+            return "";
+          })
+          .filter(Boolean);
+
+        if (formatted.length) {
+          reply +=
+            "\n\nPersonalized recommendations from your financial analysis:\n\n" +
+            formatted.map(item => "• " + item).join("\n");
+        } else {
+          reply +=
+            "\n\nYour financial analysis did not return any additional recommendations yet.";
+        }
+
+      } catch (apiError) {
+        console.error("AI recommendation request failed:", apiError);
+
+        reply +=
+          "\n\nI couldn't load additional backend recommendations right now. " +
+          "The summary above uses your available transaction data.";
+      }
+    }
+
+    replyBubble.textContent = reply;
+
+  } catch (error) {
+    console.error("AI Advisor error:", error);
+
+    replyBubble.textContent =
+      "Sorry, I couldn't prepare your response. Please try again.";
+  }
+
+  box.scrollTop = box.scrollHeight;
+}
+
+// ========== CLEAR DATA ==========
+function clearAllData() {
+  if (
+    !confirm(
+      "Delete ALL transactions, budgets and goals? This cannot be undone."
+    )
+  ) {
+    return;
+  }
+
+  transactions = [];
+  budgets = [];
+  goals = [];
+
+  localStorage.removeItem("afa_tx");
+  localStorage.removeItem("afa_budgets");
+  localStorage.removeItem("afa_goals");
+
+  updateDashboard();
+  renderExpenses();
+  renderBudget();
+  updateReports();
+
+  toast("All data cleared");
+  showPage("dashboard");
+}
+
+
+/* ========== BILL MANAGEMENT ========== */
+
+let bills = [];
+
+function getBillDateStatus(bill) {
+  if (bill.is_paid) return "Paid";
+
+  const parts = String(bill.due_date).split("-");
+  const dueDate = new Date(
+    Number(parts[0]),
+    Number(parts[1]) - 1,
+    Number(parts[2])
+  );
+
+  const now = new Date();
+  const today = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate()
+  );
+
+  const daysLeft = Math.round(
+    (dueDate.getTime() - today.getTime()) / 86400000
+  );
+
+  if (daysLeft < 0) return "Overdue";
+  if (daysLeft <= 7) return "Due Soon";
+  return "Upcoming";
+}
+
+function formatBillAmount(amount) {
+  return "₹" + Number(amount).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
+async function loadBillsFromBackend() {
+  const list = document.getElementById("billList");
+
+  if (list) {
+    list.innerHTML =
+      '<p class="text-sm text-slate-500">Loading bills...</p>';
+  }
+
+  try {
+    bills = await apiRequest("/bills");
+    syncBillNotifications();
+    renderBills();
+  } catch (error) {
+    if (list) {
+      list.innerHTML =
+        '<p class="text-sm text-rose-600">Could not load bills: ' +
+        escapeHtml(error.message) +
+        "</p>";
+    }
+
+    toast(error.message || "Could not load bills");
+  }
+}
+
+function renderBills() {
+  const list = document.getElementById("billList");
+  const summary = document.getElementById("billSummary");
+
+  if (!list || !summary) return;
+
+  const pendingBills = bills.filter(bill => !bill.is_paid);
+
+  const pendingAmount = pendingBills.reduce(
+    (total, bill) => total + Number(bill.amount),
+    0
+  );
+
+  const overdueBills = pendingBills.filter(
+    bill => getBillDateStatus(bill) === "Overdue"
+  );
+
+  const upcomingBills = pendingBills.filter(
+    bill => getBillDateStatus(bill) !== "Overdue"
+  );
+
+  summary.innerHTML = `
+    <div class="rounded-xl bg-sky-50 p-4">
+      <p class="text-xs font-semibold text-sky-700">Pending Amount</p>
+      <p class="text-xl font-bold text-sky-900 mt-2">
+        ${formatBillAmount(pendingAmount)}
+      </p>
+    </div>
+    <div class="rounded-xl bg-rose-50 p-4">
+      <p class="text-xs font-semibold text-rose-700">Overdue Bills</p>
+      <p class="text-xl font-bold text-rose-900 mt-2">
+        ${overdueBills.length}
+      </p>
+    </div>
+    <div class="rounded-xl bg-emerald-50 p-4">
+      <p class="text-xs font-semibold text-emerald-700">Upcoming Bills</p>
+      <p class="text-xl font-bold text-emerald-900 mt-2">
+        ${upcomingBills.length}
+      </p>
+    </div>
+  `;
+
+  if (bills.length === 0) {
+    list.innerHTML = `
+      <div class="text-center py-8">
+        <i class="fas fa-file-invoice text-3xl text-slate-300 mb-3"></i>
+        <p class="text-slate-500">No bills added yet.</p>
+        <p class="text-sm text-slate-400 mt-1">
+          Add your first bill using the form above.
+        </p>
+      </div>
+    `;
+    return;
+  }
+
+  const sortedBills = [...bills].sort((a, b) => {
+    if (a.is_paid !== b.is_paid) return a.is_paid ? 1 : -1;
+    return String(a.due_date).localeCompare(String(b.due_date));
+  });
+
+  list.innerHTML = sortedBills.map(bill => {
+    const status = getBillDateStatus(bill);
+
+    const statusClasses = {
+      Paid: "bg-emerald-100 text-emerald-700",
+      Overdue: "bg-rose-100 text-rose-700",
+      "Due Soon": "bg-amber-100 text-amber-700",
+      Upcoming: "bg-sky-100 text-sky-700"
+    };
+
+    return `
+      <div class="border border-slate-200 rounded-xl p-4 mb-3">
+        <div class="flex flex-col sm:flex-row sm:items-center
+                    justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <h4 class="font-semibold text-slate-800">
+                ${escapeHtml(bill.title)}
+              </h4>
+              <span class="text-xs font-semibold px-2 py-1 rounded-full
+                ${statusClasses[status]}">
+                ${status}
+              </span>
+            </div>
+
+            <p class="text-sm text-slate-500 mt-1">
+              ${escapeHtml(bill.category)}
+              · Due ${escapeHtml(bill.due_date)}
+            </p>
+
+            ${bill.notes ? `
+              <p class="text-sm text-slate-500 mt-1">
+                ${escapeHtml(bill.notes)}
+              </p>
+            ` : ""}
+
+            ${bill.is_recurring ? `
+              <p class="text-xs text-sky-600 mt-1">
+                <i class="fas fa-sync-alt mr-1"></i>
+                Recurring bill
+              </p>
+            ` : ""}
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-bold text-slate-900 mr-2">
+              ${formatBillAmount(bill.amount)}
+            </span>
+
+            ${!bill.is_paid ? `
+              <button type="button"
+                onclick="markBillPaid(${Number(bill.id)})"
+                class="px-3 py-2 rounded-lg bg-emerald-600
+                       text-white text-sm hover:bg-emerald-700">
+                <i class="fas fa-check mr-1"></i> Mark Paid
+              </button>
+            ` : ""}
+
+            <button type="button"
+              onclick="deleteBill(${Number(bill.id)})"
+              class="px-3 py-2 rounded-lg bg-rose-50
+                     text-rose-700 text-sm hover:bg-rose-100">
+              <i class="fas fa-trash mr-1"></i> Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+  renderDashboardBills();
+}
+
+
+function renderDashboardBills() {
+  const stats = document.getElementById("dashboardBillStats");
+  const list = document.getElementById("dashboardBillList");
+
+  if (!stats || !list) return;
+
+  const pending = bills.filter(bill => !bill.is_paid);
+
+  const overdue = pending.filter(
+    bill => getBillDateStatus(bill) === "Overdue"
+  );
+
+  const dueInSevenDays = pending.filter(bill => {
+    const status = getBillDateStatus(bill);
+    return status === "Due Soon";
+  });
+
+  const pendingAmount = pending.reduce(
+    (sum, bill) => sum + Number(bill.amount),
+    0
+  );
+
+  stats.innerHTML = `
+    <div class="rounded-xl bg-sky-50 p-4">
+      <p class="text-xs font-semibold text-sky-700">Pending Amount</p>
+      <p class="text-xl font-bold text-sky-900 mt-2">
+        ${formatBillAmount(pendingAmount)}
+      </p>
+    </div>
+    <div class="rounded-xl bg-rose-50 p-4">
+      <p class="text-xs font-semibold text-rose-700">Overdue Bills</p>
+      <p class="text-xl font-bold text-rose-900 mt-2">
+        ${overdue.length}
+      </p>
+    </div>
+    <div class="rounded-xl bg-amber-50 p-4">
+      <p class="text-xs font-semibold text-amber-700">Due in 7 Days</p>
+      <p class="text-xl font-bold text-amber-900 mt-2">
+        ${dueInSevenDays.length}
+      </p>
+    </div>
+  `;
+
+  const priorityBills = [...pending].sort((a, b) => {
+    const statusOrder = { Overdue: 0, "Due Soon": 1, Upcoming: 2 };
+    const difference =
+      statusOrder[getBillDateStatus(a)] -
+      statusOrder[getBillDateStatus(b)];
+
+    return difference || String(a.due_date).localeCompare(String(b.due_date));
+  }).slice(0, 4);
+
+  if (priorityBills.length === 0) {
+    list.innerHTML = `
+      <div class="rounded-xl bg-emerald-50 p-4">
+        <p class="font-semibold text-emerald-800">
+          <i class="fas fa-check-circle mr-2"></i>You're all caught up!
+        </p>
+        <p class="text-sm text-emerald-700 mt-1">
+          No pending bills. New reminders will appear here when you add bills.
+        </p>
+      </div>
+    `;
+    return;
+  }
+
+  list.innerHTML = priorityBills.map(bill => {
+    const status = getBillDateStatus(bill);
+
+    const statusClass = status === "Overdue"
+      ? "text-rose-600"
+      : status === "Due Soon"
+        ? "text-amber-600"
+        : "text-sky-600";
+
+    return `
+      <div class="flex flex-wrap items-center justify-between gap-3
+                  border-t border-slate-100 py-3">
+        <div>
+          <p class="font-semibold text-slate-800">
+            ${escapeHtml(bill.title)}
+          </p>
+          <p class="text-sm text-slate-500 mt-1">
+            Due: ${escapeHtml(bill.due_date)}
+          </p>
+        </div>
+        <div class="text-right">
+          <p class="font-bold text-slate-800">
+            ${formatBillAmount(bill.amount)}
+          </p>
+          <p class="text-xs font-semibold mt-1 ${statusClass}">
+            ${status}
+          </p>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+
+async function addBill(event) {
+  event.preventDefault();
+
+  const payload = {
+    title: document.getElementById("billTitle").value.trim(),
+    amount: Number(document.getElementById("billAmount").value),
+    category: document.getElementById("billCategory").value,
+    due_date: document.getElementById("billDueDate").value,
+    is_recurring: document.getElementById("billRecurring").checked,
+    notes: document.getElementById("billNotes").value.trim() || null
+  };
+
+  if (
+    !payload.title ||
+    !Number.isFinite(payload.amount) ||
+    payload.amount <= 0 ||
+    !payload.due_date
+  ) {
+    toast("Please enter valid bill details");
+    return;
+  }
+
+  try {
+    await apiRequest("/bills", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+
+    document.getElementById("billForm").reset();
+
+    toast("Bill added successfully!");
+
+    await loadBillsFromBackend();
+  } catch (error) {
+    toast(error.message || "Could not add bill");
+  }
+}
+
+async function markBillPaid(billId) {
+  try {
+    await apiRequest(`/bills/${billId}/paid`, {
+      method: "PATCH"
+    });
+
+    toast("Bill marked as paid!");
+
+    await loadBillsFromBackend();
+  } catch (error) {
+    toast(error.message || "Could not update bill");
+  }
+}
+
+async function deleteBill(billId) {
+  if (!confirm("Are you sure you want to delete this bill?")) {
+    return;
+  }
+
+  try {
+    await apiRequest(`/bills/${billId}`, {
+      method: "DELETE"
+    });
+
+    toast("Bill deleted successfully!");
+
+    await loadBillsFromBackend();
+  } catch (error) {
+    toast(error.message || "Could not delete bill");
+  }
+}
+
+
+// ========== START ==========
+document.addEventListener("DOMContentLoaded", async () => {
+  if (localStorage.getItem("afa_dark") === "1") {
+    document.body.classList.add("dark-mode");
+
+    const btn = document.getElementById("darkBtn");
+
+    if (btn) {
+      btn.innerHTML = '<i class="fas fa-sun"></i>';
+    }
+  }
+
+  const token = sessionStorage.getItem("afa_access_token");
+   
+  const savedEmail=sessionStorage.getItem("afa_user_email");
+
+  if(savedEmail){
+    updateUserProfile(savedEmail);
+  }
+
+  if (!token) {
+    setAuthVisibility(false);
+    return;
+  }
+
+  try {
+    // Validate the saved token with a protected backend request.
+    await apiRequest("/transactions");
+
+    setAuthVisibility(true);
+
+    await loadTransactionsFromBackend();
+    await loadBudgetGoalsFromBackend();
+    await loadBillsFromBackend();
+
+    showPage("dashboard");
+
+  } catch (error) {
+    console.error("Session validation failed:", error);
+
+    // Clear invalid sessions, but don't log the user out
+    // simply because the backend is temporarily unreachable.
+    if (error.status === 401 || error.status === 403) {
+      sessionStorage.removeItem("afa_access_token");
+      setAuthVisibility(false);
+
+      document.getElementById("authError").textContent =
+        "Your session may have expired. Please log in again.";
+    } else {
+      setAuthVisibility(true);
+
+      toast(
+        "Cannot connect to the backend. Check that your FastAPI server is running."
+      );
+    }
+  }
+});
+
+// ==========================================
+// SMART SAVINGS PLANNER
+// ==========================================
+
+function getPlannerGoals() {
+    try {
+        const savedGoals = JSON.parse(
+            localStorage.getItem("afa_goals") || "[]"
+        );
+
+        return Array.isArray(savedGoals) ? savedGoals : [];
+    } catch (error) {
+        console.error("Unable to load savings goals:", error);
+        return [];
+    }
+}
+
+function plannerGoalValue(goal, possibleKeys, fallback = 0) {
+    for (const key of possibleKeys) {
+        const value = Number(goal?.[key]);
+
+        if (
+            goal?.[key] !== undefined &&
+            goal?.[key] !== null &&
+            goal?.[key] !== "" &&
+            Number.isFinite(value)
+        ) {
+            return value;
+        }
+    }
+
+    return fallback;
+}
+
+function plannerGoalName(goal) {
+    return String(
+        goal?.name ||
+        goal?.goalName ||
+        goal?.title ||
+        "Savings Goal"
+    );
+}
+
+function plannerMoney(amount) {
+    return new Intl.NumberFormat("en-IN", {
+        style: "currency",
+        currency: "INR",
+        maximumFractionDigits: 0
+    }).format(Number.isFinite(amount) ? amount : 0);
+}
+
+function loadSavingsPlanner() {
+    const select = document.getElementById("plannerGoal");
+
+    if (!select) return;
+
+    const goals = getPlannerGoals();
+    const previousValue = select.value;
+
+    select.replaceChildren();
+
+    if (goals.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No savings goals found";
+        select.appendChild(option);
+
+        calculateSavingsPlan();
+        return;
+    }
+
+    goals.forEach((goal, index) => {
+        const option = document.createElement("option");
+        option.value = String(index);
+        option.textContent = plannerGoalName(goal);
+        select.appendChild(option);
+    });
+
+    if (
+        previousValue !== "" &&
+        Number(previousValue) >= 0 &&
+        Number(previousValue) < goals.length
+    ) {
+        select.value = previousValue;
+    }
+
+    calculateSavingsPlan();
+}
+
+function calculateSavingsPlan() {
+    const select = document.getElementById("plannerGoal");
+    const monthlyInput = document.getElementById(
+        "plannerMonthlySavings"
+    );
+
+    if (!select || !monthlyInput) return;
+
+    const goals = getPlannerGoals();
+    const selectedIndex = Number(select.value);
+    const hasGoal =
+        select.value !== "" &&
+        Number.isInteger(selectedIndex) &&
+        selectedIndex >= 0 &&
+        selectedIndex < goals.length;
+
+    const goal = hasGoal ? goals[selectedIndex] : null;
+
+    const setText = (id, value) => {
+        const element = document.getElementById(id);
+        if (element) element.textContent = value;
+    };
+
+    const setProgress = (percentage) => {
+        const bar = document.getElementById("plannerProgressBar");
+
+        if (bar) {
+            bar.style.width = `${percentage}%`;
+        }
+    };
+
+    if (!goal) {
+        setText("plannerGoalName", "No savings goal selected");
+        setText("plannerTarget", "₹0");
+        setText("plannerCurrent", "₹0");
+        setText("plannerProgressText", "0%");
+        setText("plannerRemaining", "₹0");
+        setText("plannerMonths", "—");
+        setText("plannerDate", "");
+        setText("plannerMonthlyResult", "₹0");
+        setText("plannerOldMonthly", "—");
+        setText("plannerOldMonths", "Add a savings goal first.");
+        setText("plannerNewMonthly", "—");
+        setText("plannerComparison", "No goal available to compare.");
+        setProgress(0);
+        return;
+    }
+
+    const target = Math.max(0, plannerGoalValue(
+        goal,
+        ["target", "goalTarget", "targetAmount", "target_amount"]
+    ));
+
+    const current = Math.max(0, plannerGoalValue(
+        goal,
+        ["current", "goalCurrent", "currentAmount", "current_amount", "saved"]
+    ));
+
+    const remaining = Math.max(0, target - current);
+    const progress = target > 0
+        ? Math.min(100, (current / target) * 100)
+        : 100;
+
+    const monthly = Number(monthlyInput.value);
+
+    // Supports common property names for an existing monthly contribution.
+    const currentMonthlyInput = document.getElementById(
+    "plannerCurrentMonthlySavings"
+  );
+
+   const oldMonthly = currentMonthlyInput
+    ? Math.max(0, Number(currentMonthlyInput.value) || 0)
+    : 0;
+
+    setText("plannerGoalName", plannerGoalName(goal));
+    setText("plannerTarget", plannerMoney(target));
+    setText("plannerCurrent", plannerMoney(current));
+    setText("plannerProgressText", `${progress.toFixed(1)}%`);
+    setText("plannerRemaining", plannerMoney(remaining));
+    setProgress(progress);
+
+    const validMonthly = Number.isFinite(monthly) && monthly > 0;
+
+    if (remaining === 0) {
+        setText("plannerMonths", "Goal achieved!");
+        setText("plannerDate", "You've reached your target.");
+    } else if (validMonthly) {
+        const months = Math.ceil(remaining / monthly);
+        const completionDate = new Date();
+        completionDate.setDate(1);
+        completionDate.setMonth(completionDate.getMonth() + months);
+
+        setText(
+            "plannerMonths",
+            `${months} month${months === 1 ? "" : "s"}`
+        );
+
+        setText(
+            "plannerDate",
+            `Estimated completion: ${completionDate.toLocaleDateString(
+                "en-IN",
+                { month: "long", year: "numeric" }
+            )}`
+        );
+    } else {
+        setText("plannerMonths", "Enter a valid amount");
+        setText("plannerDate", "Monthly savings must be greater than ₹0.");
+    }
+
+    setText(
+        "plannerMonthlyResult",
+        validMonthly ? plannerMoney(monthly) : "—"
+    );
+
+    setText(
+        "plannerOldMonthly",
+        oldMonthly > 0 ? plannerMoney(oldMonthly) : "Not set"
+    );
+
+    setText(
+        "plannerNewMonthly",
+        validMonthly ? plannerMoney(monthly) : "—"
+    );
+
+    if (remaining === 0) {
+        setText("plannerOldMonths", "Goal already achieved.");
+        setText("plannerComparison", "Congratulations! Your goal is complete.");
+    } else {
+        const oldMonths = oldMonthly > 0
+            ? Math.ceil(remaining / oldMonthly)
+            : null;
+
+        setText(
+            "plannerOldMonths",
+            oldMonths !== null
+                ? `Estimated completion: ${oldMonths} month${oldMonths === 1 ? "" : "s"}`
+                : "Set a current monthly contribution to compare."
+        );
+
+        if (!validMonthly) {
+            setText("plannerComparison", "Enter a monthly savings amount.");
+        } else if (oldMonths === null) {
+            setText(
+                "plannerComparison",
+                "Your new plan is calculated. Add your current monthly contribution for a time comparison."
+            );
+        } else {
+            const newMonths = Math.ceil(remaining / monthly);
+            const difference = oldMonths - newMonths;
+
+            if (difference > 0) {
+                setText(
+                    "plannerComparison",
+                    `You'll reach your goal about ${difference} month${difference === 1 ? "" : "s"} sooner.`
+                );
+            } else if (difference < 0) {
+                setText(
+                    "plannerComparison",
+                    `This plan takes about ${Math.abs(difference)} month${Math.abs(difference) === 1 ? "" : "s"} longer.`
+                );
+            } else {
+                setText(
+                    "plannerComparison",
+                    "Both plans have the same estimated completion time."
+                );
+            }
+        }
+    }
+}
+
+// ==========================================
+// GOAL-AWARE FINANCE COACH
+// ==========================================
+
+function generateGoalCoachAdvice() {
+    const output = document.getElementById("goalCoachContent");
+    const select = document.getElementById("plannerGoal");
+    const currentInput = document.getElementById(
+        "plannerCurrentMonthlySavings"
+    );
+    const adjustedInput = document.getElementById(
+        "plannerMonthlySavings"
+    );
+
+    if (!output || !select || !adjustedInput) return;
+
+    const goals = getPlannerGoals();
+    const index = Number(select.value);
+
+    if (
+        select.value === "" ||
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= goals.length
+    ) {
+        output.textContent = "Please select a savings goal first.";
+        return;
+    }
+
+    const goal = goals[index];
+
+    const target = Math.max(0, plannerGoalValue(
+        goal,
+        ["target", "goalTarget", "targetAmount", "target_amount"]
+    ));
+
+    const saved = Math.max(0, plannerGoalValue(
+        goal,
+        ["current", "goalCurrent", "currentAmount", "current_amount", "saved"]
+    ));
+
+    const remaining = Math.max(0, target - saved);
+    const currentMonthly = currentInput
+        ? Number(currentInput.value)
+        : 0;
+    const adjustedMonthly = Number(adjustedInput.value);
+
+    const money = (amount) => plannerMoney(amount);
+    const advice = [];
+
+    if (remaining === 0) {
+        advice.push({
+            title: "Congratulations!",
+            message: "You've reached this savings goal. You can now decide whether to build your emergency fund or work toward another goal."
+        });
+    } else if (!Number.isFinite(adjustedMonthly) || adjustedMonthly <= 0) {
+        advice.push({
+            title: "Choose a monthly savings amount",
+            message: "Enter a monthly contribution greater than ₹0 so I can estimate your goal timeline."
+        });
+    } else {
+        const adjustedMonths = Math.ceil(remaining / adjustedMonthly);
+
+        advice.push({
+            title: "Your goal",
+            message: `${plannerGoalName(goal)} has ${money(remaining)} remaining. At ${money(adjustedMonthly)} per month, the estimated timeline is ${adjustedMonths} month${adjustedMonths === 1 ? "" : "s"}.`
+        });
+
+        if (Number.isFinite(currentMonthly) && currentMonthly > 0) {
+            const currentMonths = Math.ceil(remaining / currentMonthly);
+            const difference = currentMonths - adjustedMonths;
+
+            if (difference > 0) {
+                advice.push({
+                    title: "Potential time saved",
+                    message: `Increasing your monthly contribution from ${money(currentMonthly)} to ${money(adjustedMonthly)} could help you reach the goal about ${difference} month${difference === 1 ? "" : "s"} sooner.`
+                });
+            } else if (difference < 0) {
+                advice.push({
+                    title: "Review the adjusted amount",
+                    message: `This contribution could take about ${Math.abs(difference)} month${Math.abs(difference) === 1 ? "" : "s"} longer than your current plan.`
+                });
+            } else {
+                advice.push({
+                    title: "Plan comparison",
+                    message: "Both monthly contribution amounts give the same estimated timeline."
+                });
+            }
+        }
+
+        advice.push({
+            title: "Keep the plan practical",
+            message: "Choose a contribution you can maintain after essential bills and regular expenses. Avoid reducing necessary spending just to meet a savings target."
+        });
+    }
+
+    output.replaceChildren();
+
+    advice.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "mb-4 last:mb-0";
+
+        const heading = document.createElement("h4");
+        heading.className = "font-semibold text-gray-800 mb-1";
+        heading.textContent = item.title;
+
+        const paragraph = document.createElement("p");
+        paragraph.className = "text-sm text-gray-600";
+        paragraph.textContent = item.message;
+
+        card.append(heading, paragraph);
+        output.appendChild(card);
+    });
+}
+
+// ==========================================
+// BACKEND-INTEGRATED GOAL FINANCE COACH
+// ==========================================
+
+async function generateGoalCoachAdviceWithBackend() {
+    // Keep the existing goal-specific advice working.
+    generateGoalCoachAdvice();
+
+    const output = document.getElementById("goalCoachContent");
+
+    if (!output) return;
+
+    const token = sessionStorage.getItem("afa_access_token");
+
+    if (!token) {
+        const message = document.createElement("p");
+        message.className = "text-sm text-amber-700 mt-3";
+        message.textContent =
+            "Please log in to load personalized recommendations from your financial data.";
+        output.appendChild(message);
+        return;
+    }
+
+    const loading = document.createElement("p");
+    loading.id = "goalCoachBackendLoading";
+    loading.className = "text-sm text-gray-500 mt-3";
+    loading.textContent = "Loading your financial recommendations...";
+    output.appendChild(loading);
+
+    try {
+        // Reuse the existing API helper so the configured API URL
+        // and Authorization header remain consistent with your app.
+        const data = await apiRequest(
+            "/financial-analysis/recommendations"
+        );
+
+        loading.remove();
+
+        const recommendations = Array.isArray(data?.recommendations)
+            ? data.recommendations
+            : [];
+
+        const heading = document.createElement("h4");
+        heading.className = "font-semibold text-gray-800 mt-4 mb-2";
+        heading.textContent = "Recommendations from your financial data";
+        output.appendChild(heading);
+
+        if (recommendations.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "text-sm text-gray-600";
+            empty.textContent =
+                "The backend did not return any recommendations yet.";
+            output.appendChild(empty);
+            return;
+        }
+
+        const list = document.createElement("ul");
+        list.className = "list-disc pl-5 space-y-2 text-sm text-gray-700";
+
+        recommendations.forEach((recommendation) => {
+            const item = document.createElement("li");
+
+            // Support either plain-text recommendations or common
+            // object formats, without rendering untrusted HTML.
+            let message = "";
+
+            if (typeof recommendation === "string") {
+                message = recommendation;
+            } else if (recommendation && typeof recommendation === "object") {
+                message = [
+                    recommendation.title,
+                    recommendation.message,
+                    recommendation.description,
+                    recommendation.recommendation
+                ].find(
+                    (value) => typeof value === "string" && value.trim()
+                ) || JSON.stringify(recommendation);
+            } else {
+                message = String(recommendation);
+            }
+
+            item.textContent = message;
+            list.appendChild(item);
+        });
+
+        output.appendChild(list);
+
+    } catch (error) {
+        const loadingMessage = document.getElementById(
+            "goalCoachBackendLoading"
+        );
+
+        if (loadingMessage) loadingMessage.remove();
+
+        const errorMessage = document.createElement("p");
+        errorMessage.className = "text-sm text-red-600 mt-3";
+        errorMessage.textContent =
+            "Your goal advice is available, but backend recommendations could not be loaded. Please check that the backend is running and your login is valid.";
+
+        output.appendChild(errorMessage);
+        console.error("Goal Coach backend error:", error);
+    }
+}
+
+
+/* ========== NOTIFICATION SYSTEM ========== */
+
+let financeNotifications = [];
+let notificationPanelOpen = false;
+
+function toggleNotifications() {
+  const panel = document.getElementById("notificationPanel");
+  const bell = document.getElementById("notificationBell");
+
+  if (!panel) return;
+
+  notificationPanelOpen = panel.classList.contains("hidden");
+
+  panel.classList.toggle("hidden", !notificationPanelOpen);
+
+  if (bell) {
+    bell.setAttribute("aria-expanded", String(notificationPanelOpen));
+  }
+
+  if (notificationPanelOpen) {
+    renderNotifications();
+  }
+}
+
+function renderNotifications() {
+  const list = document.getElementById("notificationList");
+  const badge = document.getElementById("notificationBadge");
+
+  if (!list || !badge) return;
+
+  const unreadCount = financeNotifications.filter(n => !n.read).length;
+
+  badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+  badge.classList.toggle("hidden", unreadCount === 0);
+  badge.classList.toggle("flex", unreadCount > 0);
+
+  if (financeNotifications.length === 0) {
+    list.innerHTML = `
+      <div class="p-5 text-center">
+        <i class="fas fa-bell-slash text-2xl text-slate-300"></i>
+        <p class="text-sm text-slate-500 mt-2">No notifications yet.</p>
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = financeNotifications.map((n, index) => `
+    <div class="p-3 mb-2 rounded-xl ${
+      n.read ? "bg-white" : "bg-sky-50"
+    } border border-slate-100">
+      <div class="flex gap-3">
+        <i class="fas ${n.icon} mt-1 ${
+          n.type === "overdue" ? "text-rose-500" : "text-sky-600"
+        }"></i>
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-semibold text-slate-800">${escapeHtml(n.title)}</p>
+          <p class="text-xs text-slate-600 mt-1">${escapeHtml(n.message)}</p>
+          ${
+            n.read ? "" : `
+              <button type="button"
+                onclick="markNotificationRead(${index})"
+                class="text-xs text-sky-700 font-semibold mt-2">
+                Mark as read
+              </button>`
+          }
+        </div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function markNotificationRead(index) {
+  if (!financeNotifications[index]) return;
+  financeNotifications[index].read = true;
+  renderNotifications();
+}
+
+function markAllNotificationsRead() {
+  financeNotifications.forEach(n => {
+    n.read = true;
+  });
+  renderNotifications();
+}
+
+async function requestBrowserNotificationPermission() {
+  if (!("Notification" in window)) {
+    toast("Your browser does not support notifications.");
+    return;
+  }
+
+  if (!window.isSecureContext) {
+    toast("Open the website using localhost or HTTPS.");
+    return;
+  }
+
+  try {
+    const permission = await Notification.requestPermission();
+
+    if (permission === "granted") {
+      toast("Browser notifications enabled!");
+
+      new Notification("AI Finance Advisor", {
+        body: "Notifications are enabled successfully!",
+        icon: "/favicon.ico"
+      });
+    } else {
+      toast("Notification permission was not granted.");
+    }
+  } catch (error) {
+    console.error("Browser notification error:", error);
+    toast("Could not enable browser notifications.");
+  }
+}
+
+function syncBillNotifications() {
+  financeNotifications = [];
+
+  const pendingBills = bills.filter(bill => !bill.is_paid);
+
+  pendingBills.forEach(bill => {
+    const status = getBillDateStatus(bill);
+    const amount = formatBillAmount(bill.amount);
+
+    if (status === "Overdue") {
+      financeNotifications.push({
+        title: "Bill Overdue",
+        message: `${bill.title}: ${amount}. Please check its due date (${bill.due_date}).`,
+        type: "overdue",
+        icon: "fa-exclamation-circle",
+        read: false
+      });
+    } else if (status === "Due Soon") {
+      financeNotifications.push({
+        title: "Bill Due Soon",
+        message: `${bill.title}: ${amount}, due on ${bill.due_date}.`,
+        type: "upcoming",
+        icon: "fa-calendar-alt",
+        read: false
+      });
+    }
+  });
+
+  renderNotifications();
+  showBrowserBillNotifications();
+}
+
+function showBrowserBillNotifications() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+
+  const urgentBills = bills.filter(bill => {
+    if (bill.is_paid) return false;
+    const status = getBillDateStatus(bill);
+    return status === "Overdue" || status === "Due Soon";
+  });
+
+  // Avoid repeatedly showing the same popup during this page session.
+  if (!window.shownBillNotificationIds) {
+    window.shownBillNotificationIds = new Set();
+  }
+
+  urgentBills.forEach(bill => {
+    if (window.shownBillNotificationIds.has(bill.id)) return;
+
+    const status = getBillDateStatus(bill);
+    try {
+      new Notification(
+        status === "Overdue" ? "Bill Overdue!" : "Bill Due Soon!",
+        {
+          body: `${bill.title}: ${formatBillAmount(bill.amount)}. Due date: ${bill.due_date}.`
+        }
+      );
+      window.shownBillNotificationIds.add(bill.id);
+    } catch (error) {
+      console.error("Could not show bill notification:", error);
+    }
+  });
+}
+
+function handleGlobalSearch(){
+
+  const value=document
+      .getElementById("globalSearch")
+      ?.value
+      .trim()
+      .toLowerCase();
+
+  const txSearch=document.getElementById("searchTx");
+
+  if(txSearch){
+      txSearch.value=value;
+      txSearch.dispatchEvent(new Event("input"));
+  }
+}
+
+// ========== FINANCIAL DIGITAL TWIN ==========
+function twinMoney(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "₹0";
+  return number.toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0
+  });
+}
+
+function calculateTwinProjection() {
+  const monthly = Math.max(0, Number(document.getElementById("twin-monthly")?.value) || 0);
+  const months = Math.max(0, Number(document.getElementById("twin-months")?.value) || 0);
+  const total = monthly * months;
+  const output = document.getElementById("twin-projection");
+  const note = document.getElementById("twin-projection-note");
+
+  if (output) output.textContent = twinMoney(total);
+  if (note) note.textContent =
+    `${twinMoney(monthly)} per month for ${months} months. This is a simple estimate, not a guaranteed return.`;
+}
+
+async function loadDigitalTwin() {
+  const insight = document.getElementById("twin-insight");
+  if (insight) insight.textContent = "Loading your financial data...";
+
+  try {
+    const [summaryResult, transactionsResult] = await Promise.allSettled([
+      apiRequest("/summary"),
+      apiRequest("/transactions")
+    ]);
+
+    const summary = summaryResult.status === "fulfilled"
+      ? summaryResult.value : {};
+    const transactions = transactionsResult.status === "fulfilled"
+      && Array.isArray(transactionsResult.value)
+      ? transactionsResult.value : [];
+
+    const findNumber = (obj, keys) => {
+      for (const key of keys) {
+        if (obj && obj[key] !== undefined && obj[key] !== null) {
+          const value = Number(obj[key]);
+          if (Number.isFinite(value)) return value;
+        }
+      }
+      return null;
+    };
+
+    let income = findNumber(summary, [
+      "total_income", "income", "monthly_income", "totalIncome"
+    ]);
+    let expenses = findNumber(summary, [
+      "total_expenses", "expenses", "monthly_expenses", "totalExpenses"
+    ]);
+    let balance = findNumber(summary, [
+      "balance", "net_balance", "netBalance", "total_balance"
+    ]);
+
+    if (income === null && transactions.length) {
+      income = transactions.filter(t => t.transaction_type === "income")
+        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    }
+    if (expenses === null && transactions.length) {
+      expenses = transactions.filter(t => t.transaction_type === "expense")
+        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    }
+    if (balance === null && income !== null && expenses !== null) {
+      balance = income - expenses;
+    }
+
+    const incomeEl = document.getElementById("twin-income");
+    const expensesEl = document.getElementById("twin-expenses");
+    const balanceEl = document.getElementById("twin-balance");
+
+    if (incomeEl) incomeEl.textContent = income === null ? "Unavailable" : twinMoney(income);
+    if (expensesEl) expensesEl.textContent = expenses === null ? "Unavailable" : twinMoney(expenses);
+    if (balanceEl) balanceEl.textContent = balance === null ? "Unavailable" : twinMoney(balance);
+
+    if (insight) {
+      if (summaryResult.status === "rejected" && transactionsResult.status === "rejected") {
+        insight.textContent = "Could not load financial data. Check that the backend is running and log in again.";
+      } else if (income === null || expenses === null) {
+        insight.textContent = `Loaded ${transactions.length} transactions. Some summary fields could not be identified, so check your backend summary response if values show as unavailable.`;
+      } else {
+        const ratio = income > 0 ? Math.round((expenses / income) * 100) : null;
+        insight.textContent = ratio === null
+          ? "Add income transactions to see your spending-to-income ratio."
+          : `Your recorded expenses are ${ratio}% of your recorded income. ${
+              ratio > 80
+                ? "Consider reviewing flexible expenses and building an emergency fund."
+                : "Keep tracking expenses and contributing regularly to your savings goals."
+            }`;
+      }
+    }
+  } catch (error) {
+    if (insight) insight.textContent = error.message || "Unable to load financial data.";
+  }
+
+  calculateTwinProjection();
+}

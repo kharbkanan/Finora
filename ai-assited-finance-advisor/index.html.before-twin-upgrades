@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Finance Advisor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- SIDEBAR -->
+  
+<div id="authScreen" style="position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;background:#f3f4f6;font-family:Arial,sans-serif;">
+  <div style="width:100%;max-width:420px;background:white;padding:32px;border-radius:18px;box-shadow:0 12px 40px #0002;">
+    <h1 style="font-size:26px;font-weight:700;margin:0 0 8px;color:#111827;">Finance Advisor</h1>
+    <p style="color:#6b7280;margin:0 0 24px;">Manage your money with confidence.</p>
+    <h2 id="authHeading" style="font-size:21px;font-weight:600;margin-bottom:18px;">Login to your account</h2>
+    <form id="authForm">
+      <label for="authEmail" style="display:block;margin-bottom:6px;">Email</label>
+      <input id="authEmail" type="email" autocomplete="email" required style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #d1d5db;border-radius:8px;margin-bottom:16px;">
+      <label for="authPassword" style="display:block;margin-bottom:6px;">Password</label>
+      <input id="authPassword" type="password" minlength="8" autocomplete="current-password" required style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #d1d5db;border-radius:8px;margin-bottom:16px;">
+      <p id="authError" role="alert" style="color:#dc2626;font-size:14px;min-height:18px;"></p>
+      <button id="authSubmit" type="submit" style="width:100%;padding:13px;background:#4f46e5;color:white;border:0;border-radius:8px;font-weight:600;cursor:pointer;">Login</button>
+    </form>
+    <p style="margin-top:20px;text-align:center;color:#6b7280;">
+      <span id="authSwitchText">Don't have an account?</span>
+      <button id="authSwitch" type="button" style="background:none;border:0;color:#4f46e5;font-weight:600;cursor:pointer;">Sign up</button>
+    </p>
+  </div>
+</div>
+
+<div id="appShell" style="display:none;">
+<aside id="sidebar" class="fixed top-0 left-0 h-full w-64 text-white z-50 -translate-x-full lg:translate-x-0 transition-transform duration-300">
+    
+<!-- Custom Finance Brand Logo -->
+<div class="flex items-center gap-3 px-6 py-6 border-b border-[#DDE3D9]">
+
+<div class="flex items-center gap-3 px-6 py-6 border-b border-white/10">
+  <div class="w-14 h-14 shrink-0 flex items-center justify-center">
+    <img
+      src="./logo.png"
+      alt="AI Finance Logo"
+      class="w-full h-full object-contain"
+    />
+  </div>
+
+  <div>
+    <h1 class="font-bold text-lg tracking-tight text-[#234735]">FINORA</h1>
+    <p class="text-[11px] text-slate-400 font-medium">
+      Your Money, Smarter.
+    </p>
+  </div>
+</div>
+
+
+</div>
+
+    <!-- User Profile -->
+<div class="px-5 py-5 border-b border-[#DDE3D9]">
+  <div class="flex items-center gap-3">
+    <div id="userAvatar"
+      class="w-12 h-12 rounded-full bg-[#345747] text-white flex items-center justify-center font-bold text-lg">
+      U
+    </div>
+
+    <div class="min-w-0">
+      <p id="userName" class="font-semibold text-[#25392F] truncate">
+        User
+      </p>
+
+      <p id="userEmail" class="text-xs text-[#68766C] truncate">
+        --
+      </p>
+    </div>
+  </div>
+</div>
+
+    <nav class="px-3 py-5 space-y-1">
+      <button onclick="showPage('dashboard')" class="nav-btn active" data-page="dashboard">
+        <i class="fas fa-th-large w-5 text-center"></i> Dashboard
+      </button>
+      <button onclick="showPage('chat')" class="nav-btn" data-page="chat">
+        <i class="fas fa-magic w-5 text-center"></i> AI Advisor
+        <span class="ml-auto bg-sky-400/20 text-sky-300 text-[10px] font-bold px-2 py-0.5 rounded-full">AI</span>
+      </button>
+      <button onclick="showPage('expenses')" class="nav-btn" data-page="expenses">
+        <i class="fas fa-wallet w-5 text-center"></i> Transactions
+      </button>
+      <button onclick="showPage('budget')" class="nav-btn" data-page="budget">
+        <i class="fas fa-bullseye w-5 text-center"></i> Budget & Goals
+      </button>
+      <button onclick="showPage('planner')" class="nav-btn" data-page="budget">
+        <i class="fas fa-bullseye w-5 text-center"></i> Smart Savings Planner
+      </button>
+      <button onclick="showPage('reports')" class="nav-btn" data-page="reports">
+        <i class="fas fa-chart-pie w-5 text-center"></i> Reports
+      </button>
+    
+      <button onclick="showPage('twin')" class="nav-btn" data-page="twin">
+        <i class="fas fa-brain w-5 text-center"></i> Financial Digital Twin
+      </button>
+
+    </nav>
+    <div class="absolute bottom-0 left-0 right-0 p-4 border-t border-white/10">
+      <button onclick="clearAllData()" class="w-full text-xs text-slate-500 hover:text-red-400 py-2.5 rounded-xl hover:bg-white/5 transition font-medium">
+        <i class="fas fa-trash-alt mr-1.5"></i> Clear All Data
+      </button>
+      <button onclick="logout()" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-600 hover:bg-rose-50 hover:text-rose-600 transition text-sm font-medium">
+       <i class="fas fa-sign-out-alt w-5"></i>
+       <span>Logout</span>
+      </button>
+
+    </div>
+  </aside>
+
+  <div id="overlay" class="fixed inset-0 bg-black/40 backdrop-blur-sm z-40 hidden lg:hidden" onclick="closeSidebar()"></div>
+
+  <div class="lg:ml-64 min-h-screen">
+    <!-- HEADER -->
+    <header class="top-header sticky top-0 z-30 px-4 sm:px-6 py-3.5 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <button onclick="openSidebar()" class="lg:hidden w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-600">
+          <i class="fas fa-bars"></i>
+        </button>
+      </div>
+      <div class="flex items-center gap-2">
+        <!-- Global Search -->
+<div class="hidden md:flex items-center bg-white border border-[#DDE3D9] rounded-xl px-3 py-2 w-64">
+  <i class="fas fa-search text-slate-400 text-sm"></i>
+
+  <input
+    id="globalSearch"
+    type="text"
+    placeholder="Search transactions..."
+    class="ml-2 w-full outline-none bg-transparent text-sm text-slate-700 placeholder-slate-400"
+    oninput="handleGlobalSearch()"
+  />
+</div>
+
+        <!-- Notification Bell -->
+        <div class="relative">
+          <button
+            type="button"
+            id="notificationBell"
+            onclick="toggleNotifications()"
+            class="relative w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200 transition"
+            title="Notifications"
+            aria-label="Open notifications"
+            aria-expanded="false"
+          >
+            <i class="fas fa-bell"></i>
+            <span
+              id="notificationBadge"
+              class="hidden absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-rose-500 text-white text-xs font-bold items-center justify-center"
+            >0</span>
+          </button>
+
+          <div
+            id="notificationPanel"
+            class="hidden absolute right-0 top-12 w-80 sm:w-96 max-w-[90vw] bg-white rounded-2xl shadow-xl border border-slate-200 z-50 overflow-hidden"
+          >
+            <div class="flex items-center justify-between p-4 border-b border-slate-100">
+              <h3 class="font-bold text-slate-800">Notifications</h3>
+              <button
+                type="button"
+                onclick="markAllNotificationsRead()"
+                class="text-xs font-semibold text-sky-600 hover:text-sky-700"
+              >Mark all read</button>
+            </div>
+            <div id="notificationList" class="max-h-96 overflow-y-auto p-3">
+              <p class="text-sm text-slate-500 p-3">Loading notifications...</p>
+            </div>
+            <div class="border-t border-slate-100 p-3">
+              <button
+                type="button"
+                onclick="requestBrowserNotificationPermission()"
+                class="w-full text-sm font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-xl p-3"
+              >
+                <i class="fas fa-bell mr-1"></i>
+                Enable Browser Notifications
+              </button>
+            </div>
+          </div>
+        </div>
+        <button onclick="toggleDark()" id="darkBtn" class="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200 transition" title="Dark mode">
+          <i class="fas fa-moon"></i>
+        </button>
+        <button onclick="showPage('expenses')" class="btn-primary flex items-center gap-2 text-sm !py-2 !px-4">
+          <i class="fas fa-plus text-xs"></i>
+          <span class="hidden sm:inline">Add</span>
+        </button>
+        <button onclick="showPage('chat')" class="hidden sm:flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-xl text-sm font-semibold transition">
+          <i class="fas fa-robot"></i> Ask AI
+        </button>
+      </div>
+    </header>
+
+    <main class="p-4 sm:p-6 max-w-7xl">
+
+      <!-- ========== DASHBOARD ========== -->
+      <div id="page-dashboard" class="page">
+        <!-- Personalized Greeting -->
+
+<div class="mb-6">
+  <h1 id="greetingText"
+      class="text-3xl font-bold text-[#25392F]">
+      Welcome!
+  </h1>
+
+  <p id="greetingSub"
+     class="text-[#68766C] mt-1">
+     Let's make smart financial decisions today.
+  </p>
+</div>
+        <!-- Stats -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+          <div class="stat-card stat-gradient">
+            <div class="flex justify-between items-start mb-3">
+              <span class="text-sky-100 text-xs font-semibold uppercase tracking-wide">Balance</span>
+              <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center"><i class="fas fa-wallet"></i></div>
+            </div>
+            <p class="text-3xl font-extrabold tracking-tight" id="card-balance">₹0</p>
+            <p class="text-sky-100/80 text-xs mt-2 font-medium" id="card-balance-sub">Add income & expenses</p>
+          </div>
+          <div class="stat-card card">
+            <div class="flex justify-between items-start mb-3">
+              <span class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Income</span>
+              <div class="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center"><i class="fas fa-arrow-up"></i></div>
+            </div>
+            <p class="text-3xl font-extrabold tracking-tight text-slate-900" id="card-income">₹0</p>
+            <p class="text-emerald-600 text-xs mt-2 font-medium" id="card-income-sub">No income yet</p>
+          </div>
+          <div class="stat-card card">
+            <div class="flex justify-between items-start mb-3">
+              <span class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Expenses</span>
+              <div class="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center"><i class="fas fa-arrow-down"></i></div>
+            </div>
+            <p class="text-3xl font-extrabold tracking-tight text-slate-900" id="card-expense">₹0</p>
+            <p class="text-rose-500 text-xs mt-2 font-medium" id="card-expense-sub">No expenses yet</p>
+          </div>
+          <div class="stat-card card">
+            <div class="flex justify-between items-start mb-3">
+              <span class="text-slate-500 text-xs font-semibold uppercase tracking-wide">Savings</span>
+              <div class="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center"><i class="fas fa-piggy-bank"></i></div>
+            </div>
+            <p class="text-3xl font-extrabold tracking-tight text-slate-900" id="card-savings">0%</p>
+            <p class="text-amber-600 text-xs mt-2 font-medium" id="card-savings-sub">Add data to calculate</p>
+          </div>
+        </div>
+
+        
+<!-- ========== DASHBOARD BILL REMINDERS ========== -->
+<div id="dashboardBillReminders" class="card p-5 mb-6">
+  <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+    <div>
+      <h3 class="font-bold text-slate-800">
+        <i class="fas fa-bell text-sky-600 mr-2"></i>
+        Bill & Payment Reminders
+      </h3>
+      <p class="text-sm text-slate-500 mt-1">
+        Keep track of your upcoming payments.
+      </p>
+    </div>
+
+    <button type="button" onclick="showPage('budget')"
+      class="btn-primary">
+      Manage Bills <i class="fas fa-arrow-right ml-1"></i>
+    </button>
+  </div>
+
+  <div id="dashboardBillStats"
+       class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+    <div class="rounded-xl bg-slate-50 p-4">
+      <p class="text-sm text-slate-500">Pending Amount</p>
+      <p class="text-xl font-bold text-slate-800 mt-1">₹0</p>
+    </div>
+    <div class="rounded-xl bg-slate-50 p-4">
+      <p class="text-sm text-slate-500">Overdue Bills</p>
+      <p class="text-xl font-bold text-slate-800 mt-1">0</p>
+    </div>
+    <div class="rounded-xl bg-slate-50 p-4">
+      <p class="text-sm text-slate-500">Due in 7 Days</p>
+      <p class="text-xl font-bold text-slate-800 mt-1">0</p>
+    </div>
+  </div>
+
+  <div id="dashboardBillList">
+    <p class="text-sm text-slate-500">Your bill reminders will appear here.</p>
+  </div>
+</div>
+
+
+        <!-- Quick Add Banner -->
+        <div id="quickAddBar" class="quick-banner mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-sky-500 text-white flex items-center justify-center shadow-md shadow-sky-500/30">
+              <i class="fas fa-plus"></i>
+            </div>
+            <div>
+              <p class="text-sm font-semibold text-sky-900">Start by adding your data</p>
+              <p class="text-xs text-sky-700/80">Pehle salary (Income), phir expenses add karo</p>
+            </div>
+          </div>
+          <button onclick="showPage('expenses')" class="btn-primary">
+            <i class="fas fa-plus mr-1.5"></i> Add Transaction
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-6">
+          <div class="xl:col-span-2 card p-5">
+            <h3 class="font-bold text-slate-800 mb-4">Spending Overview</h3>
+            <div class="h-64 relative">
+              <canvas id="spendChart"></canvas>
+              <div id="spendEmpty" class="absolute inset-0 flex items-center justify-center">
+                <div class="empty-state py-0">
+                  <div class="icon-wrap"><i class="fas fa-chart-line"></i></div>
+                  <p class="text-slate-400 text-sm">Charts appear after you add data</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="ai-card p-5">
+            <div class="flex items-center gap-2.5 mb-4">
+              <div class="w-9 h-9 rounded-xl bg-sky-500 flex items-center justify-center shadow-lg shadow-sky-500/40">
+                <i class="fas fa-lightbulb"></i>
+              </div>
+              <h3 class="font-bold">AI Insight</h3>
+            </div>
+            <p class="text-slate-300 text-sm leading-relaxed mb-5" id="aiInsight">
+              Add income and expenses — main tumhare real numbers se personal tips dunga.
+            </p>
+            <button onclick="showPage('chat')" class="w-full bg-white/10 hover:bg-white/20 border border-white/10 py-2.5 rounded-xl text-sm font-semibold transition">
+              Chat with AI →
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+          <div class="card p-5">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="font-bold text-slate-800">Recent</h3>
+              <button onclick="showPage('expenses')" class="text-sky-600 text-sm font-semibold hover:underline">View all</button>
+            </div>
+            <div id="recentList"></div>
+          </div>
+          <div class="card p-5">
+            <h3 class="font-bold text-slate-800 mb-4">By Category</h3>
+            <div class="h-56 relative">
+              <canvas id="pieChart"></canvas>
+              <div id="pieEmpty" class="absolute inset-0 flex items-center justify-center">
+                <div class="empty-state py-0">
+                  <div class="icon-wrap"><i class="fas fa-chart-pie"></i></div>
+                  <p class="text-slate-400 text-sm">No expense data yet</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== CHAT ========== -->
+      <div id="page-chat" class="page">
+        <div class="card overflow-hidden flex flex-col" style="height:calc(100vh - 130px)">
+          <div class="px-5 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-r from-sky-50 to-white">
+            <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-sky-400 to-sky-600 flex items-center justify-center text-white shadow-lg shadow-sky-500/30">
+              <i class="fas fa-robot text-lg"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-slate-800">AI Finance Advisor</h3>
+              <p class="text-xs text-emerald-600 font-medium flex items-center gap-1.5">
+                <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                Online · uses your data
+              </p>
+            </div>
+          </div>
+          <div id="chatBox" class="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50/80"></div>
+          <form onsubmit="sendChat(event)" class="p-4 border-t border-slate-100 bg-white flex gap-3">
+            <input id="chatInput" type="text" placeholder="Ask: analyze spending, save more, budget..."
+              class="input-field !mt-0 flex-1" autocomplete="off" />
+            <button type="submit" class="btn-primary !px-0 w-12 h-12 flex items-center justify-center !rounded-xl shrink-0">
+              <i class="fas fa-paper-plane"></i>
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- ========== EXPENSES ========== -->
+      <div id="page-expenses" class="page">
+        <div class="card p-5 mb-5">
+          <div class="flex items-center gap-3 mb-5">
+            <div class="w-10 h-10 rounded-xl bg-sky-100 text-sky-600 flex items-center justify-center">
+              <i class="fas fa-plus"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-slate-800">Add Transaction</h3>
+              <p class="text-xs text-slate-500">Income (salary) ya Expense add karo</p>
+            </div>
+          </div>
+          <input type="hidden" id="editId" value="" />
+          <form onsubmit="addExpense(event)" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4" id="txForm">
+            <div>
+              <label class="field-label">Title</label>
+              <input id="expTitle" required placeholder="Salary / Swiggy / Rent" class="input-field" />
+            </div>
+            <div>
+              <label class="field-label">Amount (₹)</label>
+              <input id="expAmount" type="number" required min="1" placeholder="5000" class="input-field" />
+            </div>
+            <div>
+              <label class="field-label">Category</label>
+              <select id="expCategory" class="input-field">
+                <option>Food</option><option>Transport</option><option>Shopping</option>
+                <option>Bills</option><option>Entertainment</option><option>Health</option>
+                <option>Education</option><option>Salary</option><option>Freelance</option><option>Other</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label">Type</label>
+              <select id="expType" class="input-field">
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label">Date</label>
+              <input id="expDate" type="date" class="input-field" />
+            </div>
+            <div class="flex items-end">
+              <button type="submit" class="btn-primary w-full" id="saveBtn">
+                <i class="fas fa-check mr-1.5"></i> <span id="saveBtnText">Save</span>
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card overflow-hidden">
+          <div id="expSummary" class="px-5 py-3 border-b border-slate-100 grid grid-cols-3 gap-3 text-center bg-slate-50/80">
+            <div><p class="text-[10px] uppercase text-slate-400 font-semibold">Income</p><p class="text-sm font-bold text-emerald-600" id="sumIncome">₹0</p></div>
+            <div><p class="text-[10px] uppercase text-slate-400 font-semibold">Expense</p><p class="text-sm font-bold text-rose-500" id="sumExpense">₹0</p></div>
+            <div><p class="text-[10px] uppercase text-slate-400 font-semibold">Net</p><p class="text-sm font-bold text-slate-800" id="sumNet">₹0</p></div>
+          </div>
+          <div class="px-5 py-4 border-b border-slate-100 flex flex-wrap justify-between items-center gap-3">
+            <h3 class="font-bold text-slate-800">All Transactions <span id="txCount" class="text-slate-400 font-medium text-sm">(0)</span></h3>
+            <div class="flex flex-wrap gap-2 items-center">
+              <input id="searchTx" type="search" placeholder="Search..." oninput="renderExpenses()" class="input-field !mt-0 !py-2 !text-xs w-32 sm:w-40" />
+              <select id="filterType" onchange="renderExpenses()" class="input-field !mt-0 !py-2 !text-xs w-auto">
+                <option value="all">All Types</option>
+                <option value="income">Income</option>
+                <option value="expense">Expense</option>
+              </select>
+              <select id="filterCat" onchange="renderExpenses()" class="input-field !mt-0 !py-2 !text-xs w-auto">
+                <option value="all">All Categories</option>
+                <option>Food</option><option>Transport</option><option>Shopping</option>
+                <option>Bills</option><option>Entertainment</option><option>Health</option>
+                <option>Education</option><option>Salary</option><option>Freelance</option><option>Other</option>
+              </select>
+              <select id="sortTx" onchange="renderExpenses()" class="input-field !mt-0 !py-2 !text-xs w-auto">
+                <option value="date-desc">Newest</option>
+                <option value="date-asc">Oldest</option>
+                <option value="amt-desc">Amount ↓</option>
+                <option value="amt-asc">Amount ↑</option>
+              </select>
+              <button onclick="exportCSV()" class="text-xs font-semibold text-sky-600 border border-sky-200 hover:bg-sky-50 px-3 py-2 rounded-xl transition" title="Export CSV">
+                <i class="fas fa-download mr-1"></i>CSV
+              </button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm tx-table">
+              <thead>
+                <tr>
+                  <th class="text-left">Title</th>
+                  <th class="text-left">Category</th>
+                  <th class="text-left">Date</th>
+                  <th class="text-left">Type</th>
+                  <th class="text-right">Amount</th>
+                  <th class="text-center">Action</th>
+                </tr>
+              </thead>
+              <tbody id="expTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== BUDGET ========== -->
+      <div id="page-budget" class="page">
+        <div class="card p-5 mb-5">
+          <h3 class="font-bold text-slate-800 mb-4">Set Category Budget</h3>
+          <form onsubmit="addBudget(event)" class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div>
+              <label class="field-label">Category</label>
+              <select id="budCategory" class="input-field">
+                <option>Food</option><option>Transport</option><option>Shopping</option>
+                <option>Bills</option><option>Entertainment</option><option>Health</option>
+                <option>Education</option><option>Other</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label">Monthly Limit (₹)</label>
+              <input id="budLimit" type="number" required min="1" placeholder="10000" class="input-field" />
+            </div>
+            <div class="sm:col-span-2 flex items-end">
+              <button type="submit" class="btn-primary">
+                <i class="fas fa-plus mr-1.5"></i> Add Budget
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card p-5 mb-5">
+          <h3 class="font-bold text-slate-800 mb-5">Your Budgets</h3>
+          <div id="budgetList"></div>
+        </div>
+        
+         
+<!-- ========== BILL MANAGEMENT ========== -->
+<div class="card p-5 mb-5">
+  <div class="flex items-center justify-between gap-3 mb-5">
+    <div>
+      <h3 class="font-bold text-slate-800">Bill & Payment Reminders</h3>
+      <p class="text-sm text-slate-500 mt-1">
+        Track upcoming bills and never miss a due date.
+      </p>
+    </div>
+    <i class="fas fa-file-invoice-dollar text-2xl text-sky-600"></i>
+  </div>
+
+  <form id="billForm" onsubmit="addBill(event)"
+        class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+
+    <div>
+      <label class="field-label">Bill Name</label>
+      <input id="billTitle" required maxlength="100"
+             placeholder="e.g. Electricity Bill" class="input-field" />
+    </div>
+
+    <div>
+      <label class="field-label">Amount (₹)</label>
+      <input id="billAmount" type="number" required min="0.01"
+             step="0.01" placeholder="1500" class="input-field" />
+    </div>
+
+    <div>
+      <label class="field-label">Category</label>
+      <select id="billCategory" required class="input-field">
+        <option value="Utilities">Utilities</option>
+        <option value="Rent">Rent</option>
+        <option value="EMI">EMI</option>
+        <option value="Insurance">Insurance</option>
+        <option value="Internet">Internet</option>
+        <option value="Education">Education</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+
+    <div>
+      <label class="field-label">Due Date</label>
+      <input id="billDueDate" type="date" required class="input-field" />
+    </div>
+
+    <div>
+      <label class="field-label">Notes (Optional)</label>
+      <input id="billNotes" maxlength="500"
+             placeholder="Payment details" class="input-field" />
+    </div>
+
+    <div class="flex items-center gap-3">
+      <input id="billRecurring" type="checkbox" class="w-4 h-4" />
+      <label for="billRecurring" class="text-sm text-slate-600">
+        Recurring bill
+      </label>
+    </div>
+
+    <div class="sm:col-span-2 lg:col-span-3">
+      <button type="submit" class="btn-primary">
+        <i class="fas fa-plus mr-1.5"></i> Add Bill
+      </button>
+    </div>
+  </form>
+
+  <div id="billSummary"
+       class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5"></div>
+
+  <div id="billList">
+    <p class="text-sm text-slate-500">Loading bills...</p>
+  </div>
+</div>
+
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div class="card p-5">
+            <h3 class="font-bold text-slate-800 mb-4">Savings Goals</h3>
+            <form onsubmit="addGoal(event)" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+              <input id="goalName" required placeholder="Goal name" class="input-field !mt-0" />
+              <input id="goalTarget" type="number" required min="1" placeholder="Target ₹" class="input-field !mt-0" />
+              <input id="goalCurrent" type="number" min="0" value="0" placeholder="Saved ₹" class="input-field !mt-0" />
+              <button type="submit" class="sm:col-span-3 btn-primary">
+                <i class="fas fa-plus mr-1.5"></i> Add Goal
+              </button>
+            </form>
+            <div id="goalsList"></div>
+          </div>
+          <div class="ai-card p-5">
+            <h3 class="font-bold mb-2">AI Recommendation</h3>
+            <p class="text-slate-300 text-sm leading-relaxed mb-5" id="budgetAITip">
+              Budgets aur transactions add karo — tips yahan dikhenge.
+            </p>
+            <button onclick="showPage('chat')" class="w-full bg-white/10 hover:bg-white/20 border border-white/10 py-2.5 rounded-xl text-sm font-semibold transition">
+              Ask AI →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Smart Savings Planner Page -->
+      <section id="page-planner" class="page hidden">
+       <div class="max-w-7xl mx-auto space-y-6">
+
+        <div>
+            <h2 class="text-2xl font-bold">Smart Savings Planner</h2>
+            <p class="text-gray-500 mt-2">
+                Explore how changing your monthly savings can help you reach your goals faster.
+            </p>
+        </div>
+
+        <!-- Planner Inputs -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <div class="bg-white rounded-xl shadow-sm border p-6">
+                <h3 class="text-lg font-semibold mb-4">Choose Your Savings Goal</h3>
+
+                <label for="plannerGoal" class="block text-sm font-medium mb-2">
+                    Select goal
+                </label>
+
+                <select id="plannerGoal"
+                        onchange="calculateSavingsPlan()"
+                        class="w-full border rounded-lg p-3 mb-4">
+                    <option value="">Loading your goals...</option>
+                </select>
+
+                <div class="mb-4">
+                    <label for="plannerMonthlySavings"
+                           class="block text-sm font-medium mb-2">
+                        Planned monthly savings (₹)
+                    </label>
+
+                    <input id="plannerMonthlySavings"
+                           type="number"
+                           min="1"
+                           step="1"
+                           value="5000"
+                           oninput="calculateSavingsPlan()"
+                           class="w-full border rounded-lg p-3"
+                           placeholder="Enter monthly savings">
+                </div>
+                <div class="mb-4">
+                    <label for="plannerCurrentMonthlySavings"
+                         class="block text-sm font-medium mb-2">
+                        Current monthly savings (₹)
+                    </label>
+
+                    <input id="plannerCurrentMonthlySavings"
+                           type="number"
+                           min="0"
+                           step="1"
+                           value="5000"
+                           oninput="calculateSavingsPlan()"
+                           class="w-full border rounded-lg p-3"
+                           placeholder="Enter current monthly savings">
+                </div>
+                <p class="text-sm text-gray-500">
+                    Try different amounts to see how your timeline changes.
+                </p>
+            </div>
+
+            <!-- Selected Goal Details -->
+            <div class="bg-white rounded-xl shadow-sm border p-6">
+                <h3 class="text-lg font-semibold mb-4">Your Goal Overview</h3>
+
+                <p class="text-gray-500 text-sm">Goal name</p>
+                <p id="plannerGoalName" class="text-xl font-semibold mb-4">
+                    Select a goal
+                </p>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-gray-50 rounded-lg p-4">
+                        <p class="text-sm text-gray-500">Target amount</p>
+                        <p id="plannerTarget" class="text-lg font-bold">₹0</p>
+                    </div>
+
+                    <div class="bg-gray-50 rounded-lg p-4">
+                        <p class="text-sm text-gray-500">Already saved</p>
+                        <p id="plannerCurrent" class="text-lg font-bold">₹0</p>
+                    </div>
+                </div>
+
+                <div class="mt-5">
+                    <div class="flex justify-between text-sm mb-2">
+                        <span>Goal progress</span>
+                        <span id="plannerProgressText">0%</span>
+                    </div>
+
+                    <div class="w-full bg-gray-200 rounded-full h-3">
+                        <div id="plannerProgressBar"
+                             class="bg-blue-600 h-3 rounded-full"
+                             style="width: 0%">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+            <div class="bg-white rounded-xl shadow-sm border p-6">
+                <p class="text-sm text-gray-500">Amount remaining</p>
+                <p id="plannerRemaining"
+                   class="text-2xl font-bold mt-2">₹0</p>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-sm border p-6">
+                <p class="text-sm text-gray-500">Estimated time to goal</p>
+                <p id="plannerMonths"
+                   class="text-2xl font-bold mt-2">—</p>
+                <p id="plannerDate" class="text-sm text-gray-500 mt-2"></p>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-sm border p-6">
+                <p class="text-sm text-gray-500">Total planned monthly savings</p>
+                <p id="plannerMonthlyResult"
+                   class="text-2xl font-bold mt-2">₹0</p>
+            </div>
+        </div>
+
+        <!-- Comparison -->
+        <div class="bg-white rounded-xl shadow-sm border p-6">
+            <h3 class="text-lg font-semibold mb-4">Current Plan vs New Plan</h3>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div class="bg-gray-50 rounded-lg p-5">
+                    <p class="text-sm text-gray-500">Current monthly savings</p>
+                    <p id="plannerOldMonthly" class="text-xl font-bold mt-2">—</p>
+                    <p id="plannerOldMonths" class="text-sm text-gray-500 mt-2">
+                        Select a goal to compare plans.
+                    </p>
+                </div>
+
+                <div class="bg-blue-50 rounded-lg p-5">
+                    <p class="text-sm text-gray-500">Adjusted savings plan</p>
+                    <p id="plannerNewMonthly" class="text-xl font-bold mt-2">—</p>
+                    <p id="plannerComparison" class="text-sm mt-2">
+                        Your comparison will appear here.
+                    </p>
+                </div>
+            </div>
+
+            <p class="text-xs text-gray-500 mt-5">
+                Estimates assume a constant monthly contribution and no investment
+                returns, interest, withdrawals, or fees.
+            </p>
+        </div>
+       </div>
+       <!-- Goal-Aware AI Finance Coach -->
+        <div class="bg-white rounded-xl shadow-sm border p-6 mt-6">
+
+         <div class="flex items-start gap-3 mb-5">
+         <div class="bg-blue-100 rounded-xl p-3">
+            <i class="fas fa-robot text-blue-600 text-xl"></i>
+         </div>
+        <div>
+            <h3 class="text-xl font-bold">Goal-Aware AI Finance Coach</h3>
+            <p class="text-gray-500 text-sm mt-1">
+              Personalized guidance based on your selected savings goal and plan.
+            </p>
+        </div>
+      </div>
+
+      <div id="goalCoachContent"
+          class="bg-gray-50 rounded-lg p-4"
+          aria-live="polite">
+         <p class="text-gray-600">
+            Select a savings goal to get personalized guidance.
+         </p>
+      </div>
+
+       <button type="button"
+             onclick="generateGoalCoachAdviceWithBackend()"
+             class="mt-4 px-5 py-3 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition">
+          <i class="fas fa-wand-magic-sparkles mr-2"></i>
+          Generate My Savings Advice
+       </button>
+     </div>
+    </section>
+
+      <!-- ========== REPORTS ========== -->
+      <div id="page-reports" class="page">
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-5 mb-5">
+          <div class="card p-5">
+            <h3 class="font-bold text-slate-800 mb-4">Income vs Expenses</h3>
+            <div class="h-64 relative">
+              <canvas id="barChart"></canvas>
+              <div id="barEmpty" class="absolute inset-0 flex items-center justify-center">
+                <div class="empty-state py-0">
+                  <div class="icon-wrap"><i class="fas fa-chart-bar"></i></div>
+                  <p class="text-slate-400 text-sm">Add data to see charts</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card p-5">
+            <h3 class="font-bold text-slate-800 mb-4">Category Breakdown</h3>
+            <div class="h-64 relative">
+              <canvas id="reportPie"></canvas>
+              <div id="reportPieEmpty" class="absolute inset-0 flex items-center justify-center">
+                <div class="empty-state py-0">
+                  <div class="icon-wrap"><i class="fas fa-chart-pie"></i></div>
+                  <p class="text-slate-400 text-sm">No expenses yet</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div class="card p-5 text-center">
+            <p class="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1">Transactions</p>
+            <p class="text-2xl font-extrabold text-slate-900" id="rep-count">0</p>
+          </div>
+          <div class="card p-5 text-center">
+            <p class="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1">Top Category</p>
+            <p class="text-2xl font-extrabold text-slate-900" id="rep-top">—</p>
+          </div>
+          <div class="card p-5 text-center">
+            <p class="text-slate-500 text-xs font-semibold uppercase tracking-wide mb-1">Net Balance</p>
+            <p class="text-2xl font-extrabold text-slate-900" id="rep-balance">₹0</p>
+          </div>
+        </div>
+      </div>
+
+    
+      <!-- ========== FINANCIAL DIGITAL TWIN ========== -->
+      <div id="page-twin" class="page">
+        <div class="space-y-6">
+          <div>
+            <p class="text-sm font-semibold text-emerald-700">YOUR FINANCIAL FUTURE</p>
+            <h2 class="text-2xl font-extrabold text-[#234735] mt-1">Financial Digital Twin</h2>
+            <p class="text-gray-500 mt-2">Explore your financial position and simulate your future savings.</p>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+              <p class="text-sm text-gray-500">Total Income</p>
+              <h3 id="twin-income" class="text-2xl font-bold mt-2">Loading...</h3>
+            </div>
+            <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+              <p class="text-sm text-gray-500">Total Expenses</p>
+              <h3 id="twin-expenses" class="text-2xl font-bold mt-2">Loading...</h3>
+            </div>
+            <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+              <p class="text-sm text-gray-500">Net Balance</p>
+              <h3 id="twin-balance" class="text-2xl font-bold mt-2">Loading...</h3>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-2xl p-5 sm:p-6 shadow-sm border border-gray-100">
+            <h3 class="text-lg font-bold text-[#234735]">What-If Savings Simulator</h3>
+            <p class="text-sm text-gray-500 mt-1">Change your planned monthly savings to estimate your future savings.</p>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-5">
+              <div>
+                <label for="twin-monthly" class="block text-sm font-medium mb-2">Monthly savings (₹)</label>
+                <input id="twin-monthly" type="number" min="0" step="500" value="5000"
+                  class="w-full rounded-xl border border-gray-300 p-3">
+              </div>
+              <div>
+                <label for="twin-months" class="block text-sm font-medium mb-2">Time period</label>
+                <select id="twin-months" class="w-full rounded-xl border border-gray-300 p-3">
+                  <option value="3">3 months</option>
+                  <option value="6">6 months</option>
+                  <option value="12" selected>12 months</option>
+                  <option value="24">24 months</option>
+                  <option value="36">36 months</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mt-5 rounded-xl bg-emerald-50 p-5">
+              <p class="text-sm text-emerald-800">Estimated additional savings</p>
+              <p id="twin-projection" class="text-3xl font-extrabold text-[#234735] mt-2">₹60,000</p>
+              <p id="twin-projection-note" class="text-sm text-gray-600 mt-2">Based on your planned monthly contribution; returns and inflation are not included.</p>
+            </div>
+            <button onclick="calculateTwinProjection()"
+              class="mt-4 rounded-xl bg-[#234735] text-white px-5 py-3 font-semibold hover:bg-emerald-900">
+              Calculate Projection
+            </button>
+          </div>
+
+          <div class="bg-white rounded-2xl p-5 sm:p-6 shadow-sm border border-gray-100">
+            <h3 class="text-lg font-bold text-[#234735]">Financial Snapshot</h3>
+            <p id="twin-insight" class="text-gray-600 mt-3">Loading your financial snapshot...</p>
+            <button onclick="loadDigitalTwin()" class="mt-4 text-sm font-semibold text-emerald-800 underline">
+              Refresh financial data
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+  <div id="toast"></div>
+  <script src="script.js"></script>
+</body>
+</html>

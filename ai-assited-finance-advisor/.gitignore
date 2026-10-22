@@ -1,0 +1,22 @@
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Secrets and environment variables
+.env
+.env.*
+!.env.example
+
+# Local databases and logs
+*.db
+*.sqlite3
+*.log
+
+# macOS
+.DS_Store
+
+# Frontend dependencies (if applicable)
+node_modules/
