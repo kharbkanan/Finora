@@ -1,0 +1,193 @@
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Numeric,
+    Boolean,
+    Date,
+    Text,
+    DateTime,
+    ForeignKey,
+    CheckConstraint,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import relationship 
+
+from database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    transactions = relationship(
+        "Transaction",
+        back_populates="user",
+    )
+
+    savings_goals = relationship(
+        "SavingsGoal",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    monthly_budgets = relationship(
+        "MonthlyBudget",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    bills = relationship(
+        "Bill",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(100), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    category = Column(String(50), nullable=False)
+    transaction_type = Column(String(10), nullable=False)
+    transaction_date = Column(Date, nullable=False)
+    notes = Column(Text, nullable=True)
+
+    # Nullable temporarily to preserve existing transactions.
+    user_id = Column(Integer,ForeignKey("users.id"),nullable=False,index=True,) 
+
+    user = relationship("User", back_populates="transactions")
+
+
+
+class SavingsGoal(Base):
+    __tablename__ = "savings_goals"
+
+    __table_args__ = (
+        CheckConstraint(
+            "target_amount > 0",
+            name="ck_savings_goal_target_positive",
+        ),
+        CheckConstraint(
+            "current_amount >= 0",
+            name="ck_savings_goal_current_nonnegative",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    goal_name = Column(String(100), nullable=False)
+    target_amount = Column(Numeric(12, 2), nullable=False)
+    current_amount = Column(
+        Numeric(12, 2),
+        nullable=False,
+        default=0,
+    )
+    target_date = Column(Date, nullable=True)
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+
+    user = relationship("User", back_populates="savings_goals")
+
+
+
+class MonthlyBudget(Base):
+    __tablename__ = "monthly_budgets"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "category",
+            "month_start",
+            name="uq_user_category_month_budget",
+        ),
+        CheckConstraint(
+            "budget_amount > 0",
+            name="ck_monthly_budget_positive",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    category = Column(String(50), nullable=False)
+    budget_amount = Column(Numeric(12, 2), nullable=False)
+    month_start = Column(Date, nullable=False)
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+
+    user = relationship("User", back_populates="monthly_budgets")
+
+class Bill(Base):
+    __tablename__ = "bills"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(100), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    category = Column(String(50), nullable=False)
+    due_date = Column(Date, nullable=False)
+    is_paid = Column(Boolean, nullable=False, default=False)
+    is_recurring = Column(Boolean, nullable=False, default=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+
+    user = relationship("User", back_populates="bills")
+
+# ========== MONEY OWED TO THE USER (IOU) ==========
+class IOU(Base):
+    __tablename__ = "ious"
+
+    id = Column(Integer, primary_key=True, index=True)
+    person_name = Column(String(100), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    transaction_id = Column(
+        Integer,
+        ForeignKey("transactions.id"),
+        nullable=False,
+        index=True,
+    )
+    status = Column(String(20), nullable=False, default="pending")
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )

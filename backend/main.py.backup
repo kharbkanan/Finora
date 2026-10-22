@@ -1,0 +1,1747 @@
+
+from financial_intelligence import ( analyze_user_spending ,get_user_monthly_spending, compare_monthly_spending , generate_spending_alerts,generate_financial_recommendations,get_user_category_monthly_spending,compare_category_monthly_spending,generate_spending_trend_recommendations,generate_budget_recommendations,
+get_monthly_spending_by_category,)
+
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from auth import verify_password, create_access_token , get_user_id_from_token , hash_password
+from auth_schemas import UserLogin, TokenResponse , UserRegister, UserResponse
+
+from datetime import date
+from decimal import Decimal
+from typing import Literal
+
+from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field , field_validator
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from database import SessionLocal
+from models import Transaction , User ,SavingsGoal , MonthlyBudget ,Bill
+
+from sqlalchemy.exc import IntegrityError
+from expense_prediction import (get_monthly_expenses,predict_next_month_expense,)
+from ml.train_model import predict_next_month_from_data
+
+app = FastAPI(
+    title="AI-Assisted Finance Advisor",
+    description="Personal finance management and intelligent insights.",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://" + "localhost:5500",
+        "http://" + "127.0.0.1:5500",
+    ],
+    allow_credentials=True,
+    allow_methods=[chr(42)],
+    allow_headers=[chr(42)],
+)
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+security = HTTPBearer()
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    token = credentials.credentials
+
+    try:
+        user_id = get_user_id_from_token(token)
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired access token.",
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="User not found.",
+        )
+
+    return user
+
+
+@app.post("/auth/register", response_model=UserResponse, status_code=201)
+def register_user(user_data: UserRegister, db: Session = Depends(get_db),):
+    existing_user = (
+        db.query(User)
+        .filter(User.email == user_data.email)
+        .first()
+    )
+
+    if existing_user:
+        raise HTTPException(
+            status_code=409,
+            detail="An account with this email already exists.",
+        )
+
+    new_user = User(
+        email=str(user_data.email).lower(),
+        password_hash=hash_password(user_data.password),
+    )
+
+    db.add(new_user)
+
+    try:
+        db.commit()
+        db.refresh(new_user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="An account with this email already exists.",
+        )
+
+    return new_user
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
+    user = (
+        db.query(User)
+        .filter(User.email == str(user_data.email).lower())
+        .first()
+    )
+
+    if user is None or not verify_password(
+        user_data.password, user.password_hash
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password.",
+        )
+
+    access_token = create_access_token(user.id)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+    }
+
+
+
+
+class TransactionCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    category: str = Field(min_length=1, max_length=50)
+    transaction_type: Literal["income", "expense"]
+    transaction_date: date
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("title", "category")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field cannot be blank.")
+        return value
+
+
+
+class TransactionResponse(TransactionCreate):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+
+
+class MonthlyBudgetCreate(BaseModel):
+    category: str = Field(min_length=1, max_length=50)
+    budget_amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    month_start: date
+
+
+class MonthlyBudgetResponse(BaseModel):
+    id: int
+    category: str
+    budget_amount: Decimal
+    month_start: date
+    user_id: int
+
+    class Config:
+        from_attributes = True
+
+
+
+class SavingsGoalCreate(BaseModel):
+    goal_name: str = Field(min_length=1, max_length=100)
+    target_amount: Decimal = Field(
+        gt=0,
+        max_digits=12,
+        decimal_places=2,
+    )
+    current_amount: Decimal = Field(
+        default=Decimal("0.00"),
+        ge=0,
+        max_digits=12,
+        decimal_places=2,
+    )
+    target_date: date | None = None
+
+    @field_validator("goal_name")
+    @classmethod
+    def validate_goal_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Goal name cannot be blank.")
+        return value
+
+
+class BillCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    amount: Decimal = Field(
+        gt=0,
+        max_digits=12,
+        decimal_places=2,
+    )
+    category: str = Field(min_length=1, max_length=50)
+    due_date: date
+    is_recurring: bool = False
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("title", "category")
+    @classmethod
+    def reject_blank_bill_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field cannot be blank.")
+        return value
+
+
+class BillUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    amount: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=12,
+        decimal_places=2,
+    )
+    category: str | None = Field(default=None, min_length=1, max_length=50)
+    due_date: date | None = None
+    is_recurring: bool | None = None
+    is_paid: bool | None = None
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class BillResponse(BaseModel):
+    id: int
+    title: str
+    amount: Decimal
+    category: str
+    due_date: date
+    is_paid: bool
+    is_recurring: bool
+    notes: str | None
+    user_id: int
+
+    class Config:
+        from_attributes = True
+
+
+class SavingsGoalResponse(SavingsGoalCreate):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+
+@app.get("/")
+def home():
+    return {
+        "message": "AI-Assisted Finance Advisor API is running!",
+        "status": "success",
+    }
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
+
+
+@app.post("/transactions", response_model=TransactionResponse)
+def create_transaction(
+    transaction: TransactionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    db_transaction = Transaction(
+        **transaction.model_dump(),
+        user_id=current_user.id,
+    )
+    db.add(db_transaction)
+    db.commit()
+    db.refresh(db_transaction)
+    return db_transaction
+
+
+@app.post("/bills", response_model=BillResponse)
+def create_bill(
+    bill: BillCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    db_bill = Bill(
+        **bill.model_dump(),
+        user_id=current_user.id,
+    )
+    db.add(db_bill)
+    db.commit()
+    db.refresh(db_bill)
+    return db_bill
+
+
+@app.get("/bills", response_model=list[BillResponse])
+def get_bills(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return (
+        db.query(Bill)
+        .filter(Bill.user_id == current_user.id)
+        .order_by(Bill.due_date.asc())
+        .all()
+    )
+
+
+@app.patch("/bills/{bill_id}/paid", response_model=BillResponse)
+def mark_bill_paid(
+    bill_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    db_bill = (
+        db.query(Bill)
+        .filter(
+            Bill.id == bill_id,
+            Bill.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if db_bill is None:
+        raise HTTPException(status_code=404, detail="Bill not found")
+
+    db_bill.is_paid = True
+    db.commit()
+    db.refresh(db_bill)
+    return db_bill
+
+
+@app.delete("/bills/{bill_id}")
+def delete_bill(
+    bill_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    db_bill = (
+        db.query(Bill)
+        .filter(
+            Bill.id == bill_id,
+            Bill.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if db_bill is None:
+        raise HTTPException(status_code=404, detail="Bill not found")
+
+    db.delete(db_bill)
+    db.commit()
+    return {"message": "Bill deleted successfully"}
+
+
+@app.get("/transactions", response_model=list[TransactionResponse])
+def get_transactions( 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    ):
+    return (
+        db.query(Transaction)
+        .filter(Transaction.user_id == current_user.id)
+        .order_by(
+            Transaction.transaction_date.desc(),
+            Transaction.id.desc(),
+        )
+        .all()
+    )
+    
+
+
+@app.put("/transactions/{transaction_id}", response_model=TransactionResponse)
+def update_transaction(
+    transaction_id: int,
+    transaction_data: TransactionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    existing = (
+        db.query(Transaction)
+        .filter(
+            Transaction.id == transaction_id,
+            Transaction.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Transaction not found",
+        )
+
+    for field, value in transaction_data.model_dump().items():
+        setattr(existing, field, value)
+
+    db.commit()
+    db.refresh(existing)
+    return existing
+
+
+@app.delete("/transactions/{transaction_id}")
+def delete_transaction(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    transaction = (
+        db.query(Transaction)
+        .filter(
+            Transaction.id == transaction_id,
+            Transaction.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if transaction is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Transaction not found",
+        )
+
+    db.delete(transaction)
+    db.commit()
+
+    return {"message": "Transaction deleted successfully"}
+
+
+@app.get("/summary")
+def get_financial_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    income = (
+        db.query(func.coalesce(func.sum(Transaction.amount), 0))
+        .filter(
+            Transaction.transaction_type == "income",
+            Transaction.user_id == current_user.id,
+        )
+        .scalar()
+    )
+
+    expenses = (
+        db.query(func.coalesce(func.sum(Transaction.amount), 0))
+        .filter(
+            Transaction.transaction_type == "expense",
+            Transaction.user_id == current_user.id,
+        )
+        .scalar()
+    )
+
+    income = Decimal(str(income))
+    expenses = Decimal(str(expenses))
+
+    return {
+        "total_income": str(income),
+        "total_expenses": str(expenses),
+        "balance": str(income - expenses),
+    }
+
+
+@app.get("/spending-by-category")
+def spending_by_category(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    results = (
+        db.query(
+            Transaction.category,
+            func.sum(Transaction.amount).label("total_spent"),
+        )
+        .filter(
+            Transaction.transaction_type == "expense",
+            Transaction.user_id == current_user.id,
+        )
+        .group_by(Transaction.category)
+        .order_by(func.sum(Transaction.amount).desc())
+        .all()
+    )
+
+    return [
+        {"category": category, "total_spent": str(total_spent)}
+        for category, total_spent in results
+    ]
+
+
+
+@app.get("/insights")
+def get_financial_insights(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    income = (
+        db.query(func.coalesce(func.sum(Transaction.amount), 0))
+        .filter(
+            Transaction.transaction_type == "income",
+            Transaction.user_id == current_user.id,
+        )
+        .scalar()
+    )
+
+    expenses = (
+        db.query(func.coalesce(func.sum(Transaction.amount), 0))
+        .filter(
+            Transaction.transaction_type == "expense",
+            Transaction.user_id == current_user.id,
+        )
+        .scalar()
+    )
+
+    income = Decimal(str(income))
+    expenses = Decimal(str(expenses))
+    balance = income - expenses
+
+    category_results = (
+        db.query(
+            Transaction.category,
+            func.sum(Transaction.amount).label("total"),
+        )
+        .filter(
+            Transaction.transaction_type == "expense",
+            Transaction.user_id == current_user.id,
+        )
+        .group_by(Transaction.category)
+        .order_by(func.sum(Transaction.amount).desc())
+        .all()
+    )
+
+    insights = []
+
+    if income == 0:
+        insights.append(
+            "Add your income records to receive more personalized insights."
+        )
+    else:
+        savings_rate = balance / income * 100
+
+        if balance < 0:
+            insights.append(
+                "Your recorded expenses exceed your income. "
+                "Review spending and prioritize essential expenses."
+            )
+        elif savings_rate < 20:
+            insights.append(
+                "Your remaining balance is below 20% of recorded income. "
+                "Review non-essential spending and set a savings goal."
+            )
+        else:
+            insights.append(
+                "Your remaining balance is at least 20% of recorded income. "
+                "Consider setting aside money toward a savings goal."
+            )
+
+    if category_results:
+        category, total = category_results[0]
+        insights.append(
+            f"{category} is your highest recorded spending category "
+            f"at {Decimal(str(total)):.2f}."
+        )
+    else:
+        insights.append(
+            "Add expense records to discover your main spending categories."
+        )
+
+    return {
+        "total_income": str(income),
+        "total_expenses": str(expenses),
+        "remaining_balance": str(balance),
+        "insights": insights,
+        "note": (
+            "Insights are based only on recorded transactions, "
+            "not verified bank balances or complete financial information."
+        ),
+    }
+
+
+
+@app.get("/summary/monthly")
+def get_monthly_summary(
+    year: int = Query(ge=2000, le=2100),
+    month: int = Query(ge=1, le=12),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    start_date = date(year, month, 1)
+
+    if month == 12:
+        end_date = date(year + 1, 1, 1)
+    else:
+        end_date = date(year, month + 1, 1)
+
+    results = (
+        db.query(
+            Transaction.transaction_type,
+            func.coalesce(func.sum(Transaction.amount), 0),
+        )
+        .filter(
+            Transaction.transaction_date >= start_date,
+            Transaction.transaction_date < end_date,
+            Transaction.user_id == current_user.id,
+        )
+        .group_by(Transaction.transaction_type)
+        .all()
+    )
+
+    totals = {
+        "income": Decimal("0"),
+        "expense": Decimal("0"),
+    }
+
+    for transaction_type, amount in results:
+        totals[transaction_type] = Decimal(str(amount))
+
+    return {
+        "year": year,
+        "month": month,
+        "total_income": str(totals["income"]),
+        "total_expenses": str(totals["expense"]),
+        "balance": str(totals["income"] - totals["expense"]),
+    }
+
+
+@app.get("/financial-analysis")
+def financial_analysis(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return analyze_user_spending(
+        db=db,
+        user_id=current_user.id,
+    )
+
+
+
+@app.get("/financial-analysis/monthly-spending")
+def monthly_spending_analysis(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_user_monthly_spending(
+        db=db,
+        user_id=current_user.id,
+    )
+
+
+@app.get("/financial-analysis/monthly-comparison")
+def monthly_spending_comparison(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    monthly_data = get_user_monthly_spending(
+        db=db,
+        user_id=current_user.id,
+    )
+
+    return compare_monthly_spending(monthly_data)
+
+
+@app.get("/financial-analysis/alerts")
+def financial_spending_alerts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    analysis = analyze_user_spending(
+        db=db,
+        user_id=current_user.id,
+    )
+
+    return {
+        "user_id": current_user.id,
+        "alerts": generate_spending_alerts(analysis),
+    }
+
+
+
+
+@app.get("/financial-analysis/recommendations")
+def financial_recommendations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    analysis = analyze_user_spending(db, current_user.id)
+
+    basic_recommendations = generate_financial_recommendations(
+        analysis
+    )
+
+    monthly_category_data = get_user_category_monthly_spending(
+        db, current_user.id
+    )
+
+    category_comparisons = compare_category_monthly_spending(
+        monthly_category_data
+    )
+
+    trend_recommendations = generate_spending_trend_recommendations(
+        category_comparisons
+    )
+
+    # Get budgets and expenses for the current month.
+    current_month = date.today().replace(day=1)
+
+    budgets = (
+        db.query(MonthlyBudget)
+        .filter(MonthlyBudget.user_id == current_user.id)
+        .filter(MonthlyBudget.month_start == current_month)
+        .all()
+    )
+
+    budget_data = [
+        {
+            "category": budget.category,
+            "budget_amount": str(budget.budget_amount),
+        }
+        for budget in budgets
+    ]
+
+    spending_by_category = get_monthly_spending_by_category(
+        db,
+        current_user.id,
+        current_month,
+    )
+
+    budget_recommendations = generate_budget_recommendations(
+        budget_data,
+        spending_by_category,
+    )
+
+    return {
+        "recommendations": (
+            basic_recommendations
+            + trend_recommendations
+            + budget_recommendations
+        )
+    }
+
+
+
+
+@app.post("/savings-goals", response_model=SavingsGoalResponse, status_code=201)
+def create_savings_goal(
+    goal_data: SavingsGoalCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    goal = SavingsGoal(
+        goal_name=goal_data.goal_name,
+        target_amount=goal_data.target_amount,
+        current_amount=goal_data.current_amount,
+        target_date=goal_data.target_date,
+        user_id=current_user.id,
+    )
+
+    db.add(goal)
+    db.commit()
+    db.refresh(goal)
+    return goal
+
+
+@app.get("/savings-goals", response_model=list[SavingsGoalResponse])
+def list_savings_goals(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return (
+        db.query(SavingsGoal)
+        .filter(SavingsGoal.user_id == current_user.id)
+        .order_by(SavingsGoal.created_at.desc())
+        .all()
+    )
+
+
+@app.patch("/savings-goals/{goal_id}/progress", response_model=SavingsGoalResponse)
+def update_savings_goal_progress(
+    goal_id: int,
+    current_amount: Decimal = Query(ge=0, max_digits=12, decimal_places=2),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    goal = (
+        db.query(SavingsGoal)
+        .filter(
+            SavingsGoal.id == goal_id,
+            SavingsGoal.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if goal is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Savings goal not found.",
+        )
+
+    goal.current_amount = current_amount
+    db.commit()
+    db.refresh(goal)
+    return goal
+
+
+@app.delete("/savings-goals/{goal_id}", status_code=204)
+def delete_savings_goal(
+    goal_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    goal = (
+        db.query(SavingsGoal)
+        .filter(
+            SavingsGoal.id == goal_id,
+            SavingsGoal.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if goal is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Savings goal not found.",
+        )
+
+    db.delete(goal)
+    db.commit()
+    return None
+
+
+
+@app.get("/financial-analysis/category-monthly-comparison")
+def category_monthly_comparison(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    monthly_data = get_user_category_monthly_spending(
+        db,
+        current_user.id,
+    )
+
+    comparisons = compare_category_monthly_spending(monthly_data)
+
+    return {
+        "category_monthly_comparison": comparisons
+    }
+
+
+
+@app.post("/budgets", response_model=MonthlyBudgetResponse)
+def create_monthly_budget(
+    budget: MonthlyBudgetCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if budget.month_start.day != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="month_start must be the first day of the month.",
+        )
+
+    existing_budget = (
+        db.query(MonthlyBudget)
+        .filter(MonthlyBudget.user_id == current_user.id)
+        .filter(MonthlyBudget.category == budget.category)
+        .filter(MonthlyBudget.month_start == budget.month_start)
+        .first()
+    )
+
+    if existing_budget:
+        raise HTTPException(
+            status_code=409,
+            detail="A budget already exists for this category and month.",
+        )
+
+    new_budget = MonthlyBudget(
+        category=budget.category.strip(),
+        budget_amount=budget.budget_amount,
+        month_start=budget.month_start,
+        user_id=current_user.id,
+    )
+
+    db.add(new_budget)
+    db.commit()
+    db.refresh(new_budget)
+
+    return new_budget
+
+
+
+@app.get("/budgets", response_model=list[MonthlyBudgetResponse])
+def get_monthly_budgets(
+    month_start: date,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if month_start.day != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="month_start must be the first day of the month.",
+        )
+
+    budgets = (
+        db.query(MonthlyBudget)
+        .filter(MonthlyBudget.user_id == current_user.id)
+        .filter(MonthlyBudget.month_start == month_start)
+        .order_by(MonthlyBudget.category.asc())
+        .all()
+    )
+
+    return budgets
+
+
+
+@app.put("/budgets/{budget_id}", response_model=MonthlyBudgetResponse)
+def update_monthly_budget(
+    budget_id: int,
+    budget: MonthlyBudgetCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if budget.month_start.day != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="month_start must be the first day of the month.",
+        )
+
+    existing_budget = (
+        db.query(MonthlyBudget)
+        .filter(MonthlyBudget.id == budget_id)
+        .filter(MonthlyBudget.user_id == current_user.id)
+        .first()
+    )
+
+    if not existing_budget:
+        raise HTTPException(
+            status_code=404,
+            detail="Budget not found.",
+        )
+
+    duplicate = (
+        db.query(MonthlyBudget)
+        .filter(MonthlyBudget.user_id == current_user.id)
+        .filter(MonthlyBudget.category == budget.category.strip())
+        .filter(MonthlyBudget.month_start == budget.month_start)
+        .filter(MonthlyBudget.id != budget_id)
+        .first()
+    )
+
+    if duplicate:
+        raise HTTPException(
+            status_code=409,
+            detail="A budget already exists for this category and month.",
+        )
+
+    existing_budget.category = budget.category.strip()
+    existing_budget.budget_amount = budget.budget_amount
+    existing_budget.month_start = budget.month_start
+
+    db.commit()
+    db.refresh(existing_budget)
+
+    return existing_budget
+
+
+@app.delete("/budgets/{budget_id}")
+def delete_monthly_budget(
+    budget_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    budget = (
+        db.query(MonthlyBudget)
+        .filter(MonthlyBudget.id == budget_id)
+        .filter(MonthlyBudget.user_id == current_user.id)
+        .first()
+    )
+
+    if not budget:
+        raise HTTPException(
+            status_code=404,
+            detail="Budget not found.",
+        )
+
+    db.delete(budget)
+    db.commit()
+
+    return {"message": "Budget deleted successfully."}
+
+
+
+@app.get("/budgets/status")
+def get_budget_status(
+    month_start: date,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if month_start.day != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="month_start must be the first day of the month.",
+        )
+
+    budgets = (
+        db.query(MonthlyBudget)
+        .filter(MonthlyBudget.user_id == current_user.id)
+        .filter(MonthlyBudget.month_start == month_start)
+        .order_by(MonthlyBudget.category.asc())
+        .all()
+    )
+
+    spending_by_category = get_monthly_spending_by_category(
+        db,
+        current_user.id,
+        month_start,
+    )
+
+    results = []
+
+    for budget in budgets:
+        budget_amount = Decimal(str(budget.budget_amount))
+        spent_amount = Decimal(
+            str(spending_by_category.get(budget.category, "0.00"))
+        )
+
+        remaining_amount = budget_amount - spent_amount
+        usage_percent = (
+            spent_amount / budget_amount * Decimal("100")
+        ).quantize(Decimal("0.01"))
+
+        if spent_amount > budget_amount:
+            status = "exceeded"
+        elif usage_percent >= 80:
+            status = "near_limit"
+        else:
+            status = "on_track"
+
+        results.append({
+            "category": budget.category,
+            "budget_amount": str(budget_amount.quantize(Decimal("0.01"))),
+            "spent_amount": str(spent_amount.quantize(Decimal("0.01"))),
+            "remaining_amount": str(remaining_amount.quantize(Decimal("0.01"))),
+            "usage_percent": str(usage_percent),
+            "status": status,
+        })
+
+    return {
+        "month_start": month_start.isoformat(),
+        "budgets": results,
+    }
+
+
+
+@app.get("/ml/expense-prediction")
+def expense_prediction(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    monthly_data = get_monthly_expenses(db, current_user.id)
+
+    monthly_expenses = [
+        item["total_expense"]
+        for item in monthly_data
+    ]
+
+    prediction = predict_next_month_expense(monthly_expenses)
+
+    return {
+        **prediction,
+        "historical_months": monthly_data,
+    }
+
+
+@app.get("/ml/financial-health-score")
+def financial_health_score(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from collections import defaultdict
+
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == current_user.id)
+        .order_by(Transaction.transaction_date.asc())
+        .all()
+    )
+
+    income_by_month = defaultdict(float)
+    expense_by_month = defaultdict(float)
+
+    for transaction in transactions:
+        month = transaction.transaction_date.strftime("%Y-%m")
+        amount = float(transaction.amount)
+
+        if transaction.transaction_type == "income":
+            income_by_month[month] += amount
+        elif transaction.transaction_type == "expense":
+            expense_by_month[month] += amount
+
+    months = sorted(set(income_by_month) | set(expense_by_month))
+    recent_months = months[-3:]
+
+    avg_income = (
+        sum(income_by_month[m] for m in recent_months) / len(recent_months)
+        if recent_months else 0.0
+    )
+    avg_expense = (
+        sum(expense_by_month[m] for m in recent_months) / len(recent_months)
+        if recent_months else 0.0
+    )
+
+    score = 0
+    tips = []
+
+    # 1. Spending compared with income: up to 40 points
+    if avg_income > 0:
+        expense_ratio = avg_expense / avg_income
+
+        if expense_ratio <= 0.50:
+            spending_points = 40
+        elif expense_ratio <= 0.70:
+            spending_points = 32
+        elif expense_ratio <= 0.85:
+            spending_points = 22
+        elif expense_ratio <= 1.0:
+            spending_points = 12
+        else:
+            spending_points = 0
+            tips.append(
+                "Your recorded expenses exceed your income. Review optional spending first."
+            )
+
+        score += spending_points
+
+        if 0.50 < expense_ratio <= 1.0:
+            tips.append(
+                "Try to reduce avoidable expenses and keep a little more income unspent."
+            )
+    else:
+        tips.append("Record your income to improve the accuracy of your health score.")
+
+    # 2. Savings surplus: up to 25 points
+    surplus = avg_income - avg_expense
+
+    if avg_income > 0 and surplus > 0:
+        savings_rate = surplus / avg_income
+
+        if savings_rate >= 0.30:
+            score += 25
+        elif savings_rate >= 0.20:
+            score += 20
+        elif savings_rate >= 0.10:
+            score += 15
+        else:
+            score += 8
+
+        tips.append(
+            "Keep building your savings consistently while ensuring essential bills are covered."
+        )
+    elif avg_income > 0:
+        tips.append("Aim for a positive monthly surplus before increasing savings commitments.")
+
+    # 3. Savings goals: up to 20 points
+    goals = (
+        db.query(SavingsGoal)
+        .filter(SavingsGoal.user_id == current_user.id)
+        .all()
+    )
+
+    if goals:
+        total_target = sum(float(g.target_amount or 0) for g in goals)
+        total_saved = sum(float(g.current_amount or 0) for g in goals)
+
+        if total_target > 0:
+            goal_progress = min(1.0, total_saved / total_target)
+            score += round(goal_progress * 20)
+
+            if goal_progress < 1:
+                tips.append(
+                    "Make regular contributions toward your savings goals and review your target dates."
+                )
+        else:
+            tips.append("Set a positive target amount for your savings goals.")
+    else:
+        tips.append("Create a savings goal to give your saving habits a clear target.")
+
+    # 4. Consistent tracking: up to 15 points
+    if len(recent_months) >= 3:
+        score += 15
+    elif len(recent_months) == 2:
+        score += 10
+        tips.append("Track your transactions for another month for a more complete picture.")
+    elif len(recent_months) == 1:
+        score += 5
+        tips.append("Keep recording income and expenses across multiple months.")
+    else:
+        tips.append("Add transactions to begin assessing your financial health.")
+
+    score = min(100, max(0, score))
+
+    if score >= 80:
+        rating = "Excellent"
+    elif score >= 65:
+        rating = "Good"
+    elif score >= 45:
+        rating = "Fair"
+    elif score >= 25:
+        rating = "Needs Improvement"
+    else:
+        rating = "Needs Attention"
+
+    return {
+        "status": "success",
+        "score": score,
+        "rating": rating,
+        "average_monthly_income": round(avg_income, 2),
+        "average_monthly_expenses": round(avg_expense, 2),
+        "estimated_monthly_surplus": round(surplus, 2),
+        "months_analyzed": recent_months,
+        "goals_count": len(goals),
+        "tips": tips,
+        "note": "This is an indicative score based on recorded transactions and goals, not a credit score or professional financial assessment.",
+    }
+
+
+@app.get("/ml/financial-coach")
+def personalized_financial_coach(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from collections import defaultdict
+
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == current_user.id)
+        .order_by(Transaction.transaction_date.asc())
+        .all()
+    )
+
+    if not transactions:
+        return {
+            "status": "insufficient_data",
+            "message": "Add income and expense transactions to receive personalized advice.",
+            "advice": [],
+        }
+
+    income_by_month = defaultdict(float)
+    expenses_by_month = defaultdict(float)
+    category_expenses = defaultdict(float)
+
+    for transaction in transactions:
+        month = transaction.transaction_date.strftime("%Y-%m")
+        amount = float(transaction.amount)
+
+        if transaction.transaction_type == "income":
+            income_by_month[month] += amount
+        elif transaction.transaction_type == "expense":
+            expenses_by_month[month] += amount
+            category_expenses[transaction.category or "Other"] += amount
+
+    months = sorted(set(income_by_month) | set(expenses_by_month))
+    recent_months = months[-3:]
+
+    avg_income = (
+        sum(income_by_month[m] for m in recent_months) / len(recent_months)
+        if recent_months else 0.0
+    )
+    avg_expenses = (
+        sum(expenses_by_month[m] for m in recent_months) / len(recent_months)
+        if recent_months else 0.0
+    )
+
+    surplus = avg_income - avg_expenses
+    advice = []
+
+    if avg_income <= 0:
+        advice.append({
+            "title": "Record your income",
+            "priority": "high",
+            "message": "Add your income transactions to get a more useful picture of your financial health.",
+        })
+    elif surplus < 0:
+        advice.append({
+            "title": "Bring spending within income",
+            "priority": "high",
+            "message": f"Your recent average expenses exceed income by ₹{abs(surplus):,.0f} per month. Review optional expenses and upcoming bills.",
+        })
+    elif surplus == 0:
+        advice.append({
+            "title": "Create a monthly surplus",
+            "priority": "high",
+            "message": "Your recent average income and expenses are equal. Look for a manageable expense reduction to start saving.",
+        })
+    else:
+        suggested_savings = surplus * 0.20
+        advice.append({
+            "title": "Build your savings consistently",
+            "priority": "medium",
+            "message": f"Your estimated monthly surplus is ₹{surplus:,.0f}. Consider setting aside up to ₹{suggested_savings:,.0f} monthly if your essential needs and bills are covered.",
+        })
+
+    if category_expenses:
+        top_category, top_amount = max(
+            category_expenses.items(), key=lambda item: item[1]
+        )
+        advice.append({
+            "title": f"Review {top_category} spending",
+            "priority": "medium",
+            "message": f"{top_category} is your highest recorded expense category across all available transactions, totaling ₹{top_amount:,.0f}. Check whether any spending can be reduced.",
+        })
+
+    goals = (
+        db.query(SavingsGoal)
+        .filter(SavingsGoal.user_id == current_user.id)
+        .all()
+    )
+
+    incomplete_goals = [
+        goal for goal in goals
+        if float(goal.current_amount or 0) < float(goal.target_amount or 0)
+    ]
+
+    if incomplete_goals:
+        goal = min(
+            incomplete_goals,
+            key=lambda g: float(g.target_amount or 0) - float(g.current_amount or 0)
+        )
+        remaining = max(
+            0.0,
+            float(goal.target_amount or 0) - float(goal.current_amount or 0)
+        )
+        advice.append({
+            "title": f"Make progress on {goal.goal_name}",
+            "priority": "medium",
+            "message": f"You have ₹{remaining:,.0f} remaining for this goal. Choose a realistic monthly contribution that fits your budget.",
+        })
+
+    if len(recent_months) < 2:
+        advice.append({
+            "title": "Improve your financial tracking",
+            "priority": "low",
+            "message": "Record transactions consistently over several months to make these recommendations more meaningful.",
+        })
+
+    return {
+        "status": "success",
+        "advice": advice,
+        "months_analyzed": recent_months,
+        "average_monthly_income": round(avg_income, 2),
+        "average_monthly_expenses": round(avg_expenses, 2),
+        "estimated_monthly_surplus": round(surplus, 2),
+        "note": "Recommendations are rule-based estimates using your recorded transactions, not professional financial advice.",
+    }
+
+
+@app.get("/ml/goal-predictions")
+def predict_savings_goals(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from datetime import date
+    from collections import defaultdict
+
+    goals = (
+        db.query(SavingsGoal)
+        .filter(SavingsGoal.user_id == current_user.id)
+        .all()
+    )
+
+    if not goals:
+        return {
+            "status": "success",
+            "goals": [],
+            "message": "Create a savings goal to see its achievement prediction.",
+        }
+
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == current_user.id)
+        .all()
+    )
+
+    monthly_income = defaultdict(float)
+    monthly_expenses = defaultdict(float)
+
+    for transaction in transactions:
+        month = transaction.transaction_date.strftime("%Y-%m")
+        if transaction.transaction_type == "income":
+            monthly_income[month] += float(transaction.amount)
+        elif transaction.transaction_type == "expense":
+            monthly_expenses[month] += float(transaction.amount)
+
+    recorded_months = sorted(
+        set(monthly_income.keys()) | set(monthly_expenses.keys())
+    )
+    recent_months = recorded_months[-3:]
+
+    avg_surplus = 0.0
+    if recent_months:
+        avg_surplus = sum(
+            monthly_income[m] - monthly_expenses[m]
+            for m in recent_months
+        ) / len(recent_months)
+
+    affordable_monthly = max(0.0, avg_surplus)
+    today = date.today()
+    predictions = []
+
+    for goal in goals:
+        target = float(goal.target_amount or 0)
+        saved = float(goal.current_amount or 0)
+        remaining = max(0.0, target - saved)
+
+        required_monthly = None
+        months_left = None
+        estimated_months = None
+
+        if goal.target_date:
+            months_left = max(
+                0,
+                (goal.target_date.year - today.year) * 12
+                + goal.target_date.month - today.month
+            )
+            if months_left > 0:
+                required_monthly = round(remaining / months_left, 2)
+            elif remaining > 0:
+                required_monthly = round(remaining, 2)
+
+        if remaining == 0:
+            status = "achieved"
+            message = "Congratulations! This goal is achieved."
+        elif affordable_monthly > 0:
+            estimated_months = int(
+                __import__("math").ceil(remaining / affordable_monthly)
+            )
+            if goal.target_date and goal.target_date <= today:
+                status = "overdue"
+                message = "The target date has passed. Consider updating your deadline."
+            elif required_monthly is not None and affordable_monthly >= required_monthly:
+                status = "on_track"
+                message = "Your recent estimated surplus may be enough to reach this goal on time."
+            else:
+                status = "needs_more_savings"
+                message = "You may need to save more each month or extend the deadline."
+        else:
+            status = "insufficient_surplus"
+            message = "Recent recorded transactions show no positive monthly surplus."
+
+        predictions.append({
+            "goal_id": goal.id,
+            "goal_name": goal.goal_name,
+            "target_amount": round(target, 2),
+            "current_amount": round(saved, 2),
+            "remaining_amount": round(remaining, 2),
+            "progress_percent": round(min(100, saved / target * 100), 1) if target > 0 else 0,
+            "target_date": goal.target_date.isoformat() if goal.target_date else None,
+            "months_until_target": months_left,
+            "required_monthly_savings": required_monthly,
+            "estimated_affordable_monthly_savings": round(affordable_monthly, 2),
+            "estimated_months_to_goal": estimated_months,
+            "status": status,
+            "message": message,
+        })
+
+    return {
+        "status": "success",
+        "goals": predictions,
+        "average_monthly_surplus": round(avg_surplus, 2),
+        "months_used": len(recent_months),
+        "note": "Predictions are estimates based on recent recorded transactions, not guarantees.",
+    }
+
+
+@app.get("/ml/what-if-simulator")
+def what_if_simulator(
+    monthly_savings: float = 5000,
+    months: int = 12,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from datetime import date
+    from collections import defaultdict
+
+    if monthly_savings < 0 or months < 1 or months > 60:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail="Monthly savings must be non-negative and months must be between 1 and 60.",
+        )
+
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == current_user.id)
+        .all()
+    )
+
+    monthly_income = defaultdict(float)
+    monthly_expenses = defaultdict(float)
+
+    for transaction in transactions:
+        month = transaction.transaction_date.strftime("%Y-%m")
+
+        if transaction.transaction_type == "income":
+            monthly_income[month] += float(transaction.amount)
+        elif transaction.transaction_type == "expense":
+            monthly_expenses[month] += float(transaction.amount)
+
+    months_found = sorted(
+        set(monthly_income.keys()) | set(monthly_expenses.keys())
+    )
+
+    if not months_found:
+        return {
+            "status": "insufficient_data",
+            "message": "Add income and expense transactions to estimate affordability.",
+        }
+
+    # Use the latest three recorded months with transactions.
+    recent_months = months_found[-3:]
+    avg_income = sum(monthly_income[m] for m in recent_months) / len(recent_months)
+    avg_expenses = sum(monthly_expenses[m] for m in recent_months) / len(recent_months)
+    estimated_surplus = avg_income - avg_expenses
+
+    affordable_savings = max(0.0, estimated_surplus)
+
+    planned_total = monthly_savings * months
+    affordable_total = affordable_savings * months
+
+    return {
+        "status": "success",
+        "months_used": len(recent_months),
+        "monthly_income_average": round(avg_income, 2),
+        "monthly_expenses_average": round(avg_expenses, 2),
+        "estimated_monthly_surplus": round(estimated_surplus, 2),
+        "estimated_affordable_monthly_savings": round(affordable_savings, 2),
+        "planned_monthly_savings": round(monthly_savings, 2),
+        "planned_total_savings": round(planned_total, 2),
+        "estimated_affordable_total": round(affordable_total, 2),
+        "difference": round(planned_total - affordable_total, 2),
+        "months": months,
+        "note": "Estimate based on recorded transactions from recent months. Irregular expenses and future changes are not included.",
+    }
+
+
+@app.get("/ml/spending-anomalies")
+def spending_anomalies(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from collections import defaultdict
+
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == current_user.id)
+        .filter(Transaction.transaction_type == "expense")
+        .order_by(Transaction.transaction_date.asc())
+        .all()
+    )
+
+    if not transactions:
+        return {
+            "status": "insufficient_data",
+            "message": "Add expense transactions to detect unusual spending.",
+            "anomalies": [],
+        }
+
+    monthly_category = defaultdict(float)
+    all_months = set()
+
+    for transaction in transactions:
+        month = transaction.transaction_date.strftime("%Y-%m")
+        category = (transaction.category or "Other").strip()
+
+        monthly_category[(month, category)] += float(transaction.amount)
+        all_months.add(month)
+
+    months = sorted(all_months)
+
+    if len(months) < 2:
+        return {
+            "status": "insufficient_data",
+            "message": "Record expenses across at least two different months.",
+            "anomalies": [],
+        }
+
+    latest_month = months[-1]
+    previous_months = months[:-1][-3:]
+    categories = sorted({category for _, category in monthly_category})
+
+    anomalies = []
+
+    for category in categories:
+        previous_values = [
+            monthly_category.get((month, category), 0.0)
+            for month in previous_months
+        ]
+
+        latest_amount = monthly_category.get(
+            (latest_month, category), 0.0
+        )
+
+        average = (
+            sum(previous_values) / len(previous_values)
+            if previous_values else 0.0
+        )
+
+        # Require both a 50% increase and at least ₹1,000
+        # above the historical average to flag an anomaly.
+        if (
+            latest_amount > average * 1.5
+            and latest_amount - average >= 1000
+        ):
+            anomalies.append({
+                "category": category,
+                "latest_amount": round(latest_amount, 2),
+                "historical_average": round(average, 2),
+                "increase": round(latest_amount - average, 2),
+                "increase_percent": (
+                    round((latest_amount - average) / average * 100, 1)
+                    if average > 0 else None
+                ),
+                "month": latest_month,
+            })
+
+    anomalies.sort(
+        key=lambda item: item["increase"],
+        reverse=True,
+    )
+
+    return {
+        "status": "success",
+        "latest_month": latest_month,
+        "months_compared": previous_months,
+        "anomalies": anomalies,
+        "message": (
+            "Unusual spending detected."
+            if anomalies else
+            "No unusually high category spending detected."
+        ),
+    }
+
+
+@app.get("/ml/expense-budget-forecast")
+def expense_budget_forecast(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    monthly_data = get_monthly_expenses(db, current_user.id)
+
+    monthly_expenses = [
+        item["total_expense"] for item in monthly_data
+    ]
+
+    if not monthly_data:
+        return {
+            "status": "insufficient_data",
+            "message": "No monthly expense history is available.",
+            "forecast_month": None,
+            "predicted_expense": None,
+            "total_budget": None,
+            "budget_comparison": None,
+        }
+
+    latest_month = date.fromisoformat(
+        monthly_data[-1]["month"]
+    )
+
+    if latest_month.month == 12:
+        forecast_month = date(latest_month.year + 1, 1, 1)
+    else:
+        forecast_month = date(
+            latest_month.year,
+            latest_month.month + 1,
+            1,
+        )
+
+    prediction = predict_next_month_from_data(monthly_expenses)
+
+    budgets = (
+        db.query(MonthlyBudget)
+        .filter(MonthlyBudget.user_id == current_user.id)
+        .filter(MonthlyBudget.month_start == forecast_month)
+        .all()
+    )
+
+    total_budget = sum(
+        (
+            Decimal(str(budget.budget_amount))
+            for budget in budgets
+        ),
+        Decimal("0.00"),
+    )
+
+    if prediction["status"] != "success":
+        return {
+            "status": "insufficient_data",
+            "message": prediction.get(
+                "message",
+                "At least 3 months of expenses are required.",
+            ),
+            "forecast_month": forecast_month.isoformat(),
+            "predicted_expense": None,
+            "total_budget": str(
+                total_budget.quantize(Decimal("0.01"))
+            ),
+            "budget_comparison": None,
+        }
+
+    predicted_expense = Decimal(
+        str(prediction["predicted_expense"])
+    ).quantize(Decimal("0.01"))
+
+    difference = predicted_expense - total_budget
+
+    if not budgets:
+        comparison = "no_budget"
+    elif predicted_expense > total_budget:
+        comparison = "over_budget"
+    elif predicted_expense == total_budget:
+        comparison = "at_budget"
+    else:
+        comparison = "within_budget"
+
+    return {
+        "status": "success",
+        "forecast_month": forecast_month.isoformat(),
+        "predicted_expense": str(predicted_expense),
+        "total_budget": str(
+            total_budget.quantize(Decimal("0.01"))
+        ),
+        "difference": str(difference.quantize(Decimal("0.01"))),
+        "budget_comparison": comparison,
+        "months_used": prediction["months_used"],
+        "model": prediction["model"],
+    }
